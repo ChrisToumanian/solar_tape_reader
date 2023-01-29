@@ -1,4 +1,4 @@
-# 📼Solar Tape Reader
+# ☀️Solar Tape Reader
 Read a collection of proprietary 8mm data tapes with solar images on them.
 
 Extracts the headers and images.
@@ -26,3 +26,9 @@ python -m venv venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+## 📼Tape Deck Requirements
+1. dd.exe to read from the tape deck - Windows dd.exe is available here: http://www.chrysocome.net/dd
+2. mt.exe to rewind the tape - Windows mt.exe is available in a collection of utilities found here in LCUtils.zip: https://www.tecno-notas.com/winnt.htm
+3. A tape deck - We're currently using a Sun XL 8mm Exebyte drive
+4. SCSI PCI adapter - We're using an Adaptec AHA-2940UW with the drivers AdaptecAic78xx_for_AHA_29xx:
+https://www.savagetaylor.com/2018/02/11/scsi-on-windows-10-adaptec-aha-2940-adaptec-29xx-ultra-or-aic-7870-adaptec-78xx/
