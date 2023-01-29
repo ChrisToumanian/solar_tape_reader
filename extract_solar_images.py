@@ -7,6 +7,7 @@ import argparse
 import csv
 import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 
 # ==========================================================================================
 # Main & Arguments
@@ -111,9 +112,10 @@ def trim_buffer(buffer, start_byte, end_byte):
     return trimmed_buffer
 
 def save_image(buffer, width, filepath, input_file, image_number, timestamp):
-    filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
-    image = np.frombuffer(buffer, dtype=np.uint8) # Convert to UINT8
+    filename = "{}.{}.{:03d}.normalize.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
+    image = np.frombuffer(buffer, dtype=np.uint16) # Convert to UINT16
     image = np.reshape(image, (-1, width)) # Reshape to 2D array
+    #plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(image), vmax=np.nanmax(image)) # Normalized
     cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
