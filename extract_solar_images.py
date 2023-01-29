@@ -15,7 +15,7 @@ def main(args):
     header = read_file_header(buffer)
 
     if (args.append_filename):
-        append_filename_with_header_timestamp()
+        append_filename_with_header_timestamp(args.input_file, args.output_path, header, buffer)
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -56,7 +56,7 @@ def read_file_header(buffer):
     if nrecs <= 0:
         nrecs = (lsize * size * nlines + 8192) / 8192 + 1
 
-    timestamp = "{:04d}-{:02d}-{:02d}_{:02d}:{:02d}:{:02d}:{:02d}".format(year, month, day, hour, minute, second, tick)
+    timestamp = "{:04d}-{:02d}-{:02d}_{:02d}{:02d}{:02d}{:02d}".format(year, month, day, hour, minute, second, tick)
 
     header = {
         "month": month,
@@ -91,8 +91,11 @@ def read_file_to_buffer(filepath):
         buffer = f.read()
     return buffer
 
-def append_filename_with_header_timestamp(header):
-    print("to-do")
+def append_filename_with_header_timestamp(input_file, output_path, header, buffer):
+    filename = "{}.{}.DAT".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
+    
+    with open(f"{output_path}{filename}", "wb") as binary_file:
+        binary_file.write(buffer)
 
 def export_header(header):
     print("to-do")
