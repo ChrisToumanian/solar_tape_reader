@@ -1,5 +1,5 @@
 # ☀️Solar Tape Reader
-Read a collection of proprietary 8mm data tapes with solar images on them.
+Read a collection of proprietary solar tape imagery from 8mm data tapes.
 
 Extracts the headers and images.
 
