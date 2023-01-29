@@ -4,6 +4,7 @@
 # ==========================================================================================
 import os
 import argparse
+import csv
 
 # ==========================================================================================
 # Main & Arguments
@@ -13,6 +14,8 @@ def main(args):
     buffer = read_file_to_buffer(args.input_file)
 
     header = read_file_header(buffer)
+
+    export_header(args.input_file, args.output_path, header)
 
     if (args.append_filename):
         append_filename_with_header_timestamp(args.input_file, args.output_path, header, buffer)
@@ -79,8 +82,6 @@ def read_file_header(buffer):
         "timestamp": timestamp
     }
 
-    print(header)
-
     return header
 
 # ==========================================================================================
@@ -92,13 +93,19 @@ def read_file_to_buffer(filepath):
     return buffer
 
 def append_filename_with_header_timestamp(input_file, output_path, header, buffer):
-    filename = "{}.{}.DAT".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
+    filename = "{}.{}.dat".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
     
     with open(f"{output_path}{filename}", "wb") as binary_file:
         binary_file.write(buffer)
 
-def export_header(header):
-    print("to-do")
+def export_header(input_file, output_path, header):
+    filename = "{}.{}_header.csv".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
+    field_names = ["timestamp", "nlines", "nrecs", "nsamps", "dtype", "dtype", "dsize", "lsize", "dtime", "ostat", "c1", "c2"]
+
+    with open(f"{output_path}{filename}", 'w') as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=field_names, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerow(header)
 
 # ==========================================================================================
 # Entry
