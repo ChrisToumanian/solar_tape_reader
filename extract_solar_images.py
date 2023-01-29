@@ -29,7 +29,6 @@ def parse_arguments():
 # Header
 # ==========================================================================================
 def read_file_header(buffer):
-
     month = buffer[4*0]
     day = buffer[4*1]
     year = buffer[4*2]
@@ -93,10 +92,10 @@ def read_file_to_buffer(filepath):
     return buffer
 
 def append_filename_with_header_timestamp(header):
-    print("append filename with header timestamp")
+    print("to-do")
 
 def export_header(header):
-
+    print("to-do")
 
 # ==========================================================================================
 # Entry
