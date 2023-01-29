@@ -15,7 +15,7 @@ git clone https://github.com/ChrisToumanian/solar_tape_reader
 3. Create and enter a Python environment for the project.
 
 ```
-cd solar-yolo
+cd solar_tape_reader
 python -m venv venv
 . venv/bin/activate
 ```
