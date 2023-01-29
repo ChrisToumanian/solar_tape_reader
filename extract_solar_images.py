@@ -98,18 +98,20 @@ def export_images(full_buffer, filepath, input_file, header):
     image_height = 512
     n_images = 60
 
-    buffer = trim_buffer(full_buffer, 512, image_width*image_height)
+    buffer = trim_buffer(full_buffer, 512, len(full_buffer))
+
+    buffer = trim_buffer(buffer, 0, image_width*image_height)
 
     save_image(buffer, image_width, filepath, input_file, header["timestamp"])
 
-def trim_buffer(buffer, start_byte, length):
-    trimmed_buffer = buffer[start_byte:start_byte + length]
+def trim_buffer(buffer, start_byte, end_byte):
+    trimmed_buffer = buffer[start_byte:end_byte]
     return trimmed_buffer
 
 def save_image(buffer, width, filepath, input_file, timestamp):
     filename = "{}.{}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp)
     image = np.frombuffer(buffer, dtype=np.uint8)
-    image.reshape(-1, width)
+    image = np.reshape(image, (-1, width))
     cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
