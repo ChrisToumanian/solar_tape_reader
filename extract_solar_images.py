@@ -3,6 +3,7 @@
 # Maintainers: Christopher Toumanian, cct_580@usc.edu
 # ==========================================================================================
 import os
+import argparse
 
 # ==========================================================================================
 # Main & Arguments
@@ -14,7 +15,7 @@ def main(args):
     header = read_file_header(buffer)
 
     if (args.append_filename):
-        append_filename()
+        append_filename_with_header_timestamp()
 
 def parse_arguments():
     parser = argparse.ArgumentParser()
@@ -30,24 +31,35 @@ def parse_arguments():
 def read_file_header(buffer):
 
     header = {
-        "month": 0,
-        "day": 0,
-        "year": 0,
-        "hour": 0,
-        "minute": 0,
-        "second": 0,
-        "tick": 0,
-        "nlines": 0,
-        "nrecs": 0,
-        "nsamps": 0,
-        "dtype": 0,
-        "dsize": 0,
-        "lsize": 0,
-        "dtime": 0,
-        "ostat": 0,
-        "c1": 0,
-        "c2": 0,
+        "month": buffer[4*0],
+        "day": buffer[4*1],
+        "year": buffer[4*2],
+        "hour": buffer[4*3],
+        "minute": buffer[4*4],
+        "second": buffer[4*5],
+        "tick": buffer[4*6],
+        "nlines": buffer[4*7],
+        "nrecs": buffer[4*8],
+        "nsamps": buffer[4*9],
+        "dtype": buffer[4*19],
+        "dsize": buffer[4*21],
+        "lsize": buffer[4*22],
+        "dtime": buffer[4*24],
+        "ostat": buffer[4*25],
+        "c1": buffer[4*64],
+        "c2": buffer[4*66],
+        "timestamp": ""
     }
+
+    if header["year"] < 10:
+        header["year"] += 2000
+    elif header["year"] < 1900:
+        header["year"] += 1900
+
+    if header["nrecs"] <= 0:
+        header["nrecs"] = (header["lsize"] * header["size"] * header["nlines"] + 8192) / 8192 + 1
+
+    print(header)
 
     return header
 
@@ -55,10 +67,15 @@ def read_file_header(buffer):
 # I/O
 # ==========================================================================================
 def read_file_to_buffer(filepath):
-    print("read file to buffer")
+    with open(filepath, mode='rb') as f:
+        buffer = f.read()
+    return buffer
 
-def append_filename_with_header_date(header):
-    print("append filename with header date")
+def append_filename_with_header_timestamp(header):
+    print("append filename with header timestamp")
+
+def export_header(header):
+
 
 # ==========================================================================================
 # Entry
