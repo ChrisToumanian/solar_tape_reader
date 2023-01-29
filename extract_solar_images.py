@@ -30,34 +30,55 @@ def parse_arguments():
 # ==========================================================================================
 def read_file_header(buffer):
 
+    month = buffer[4*0]
+    day = buffer[4*1]
+    year = buffer[4*2]
+    hour = buffer[4*3]
+    minute = buffer[4*4]
+    second = buffer[4*5]
+    tick = buffer[4*6]
+    nlines = buffer[4*7]
+    nrecs = buffer[4*8]
+    nsamps = buffer[4*9]
+    dtype = buffer[4*19]
+    dsize = buffer[4*21]
+    lsize = buffer[4*22]
+    dtime = buffer[4*24]
+    ostat = buffer[4*25]
+    c1 = buffer[4*64]
+    c2 = buffer[4*66]
+    timestamp = ""
+
+    if year < 10:
+        year += 2000
+    elif year < 1900:
+        year += 1900
+
+    if nrecs <= 0:
+        nrecs = (lsize * size * nlines + 8192) / 8192 + 1
+
+    timestamp = "{:04d}-{:02d}-{:02d}_{:02d}:{:02d}:{:02d}:{:02d}".format(year, month, day, hour, minute, second, tick)
+
     header = {
-        "month": buffer[4*0],
-        "day": buffer[4*1],
-        "year": buffer[4*2],
-        "hour": buffer[4*3],
-        "minute": buffer[4*4],
-        "second": buffer[4*5],
-        "tick": buffer[4*6],
-        "nlines": buffer[4*7],
-        "nrecs": buffer[4*8],
-        "nsamps": buffer[4*9],
-        "dtype": buffer[4*19],
-        "dsize": buffer[4*21],
-        "lsize": buffer[4*22],
-        "dtime": buffer[4*24],
-        "ostat": buffer[4*25],
-        "c1": buffer[4*64],
-        "c2": buffer[4*66],
-        "timestamp": ""
+        "month": month,
+        "day": day,
+        "year": year,
+        "hour": hour,
+        "minute": minute,
+        "second": second,
+        "tick": tick,
+        "nlines": nlines,
+        "nrecs": nrecs,
+        "nsamps": nsamps,
+        "dtype": dtype,
+        "dsize": dsize,
+        "lsize": lsize,
+        "dtime": dtime,
+        "ostat": ostat,
+        "c1": c1,
+        "c2": c2,
+        "timestamp": timestamp
     }
-
-    if header["year"] < 10:
-        header["year"] += 2000
-    elif header["year"] < 1900:
-        header["year"] += 1900
-
-    if header["nrecs"] <= 0:
-        header["nrecs"] = (header["lsize"] * header["size"] * header["nlines"] + 8192) / 8192 + 1
 
     print(header)
 
