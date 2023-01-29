@@ -5,6 +5,8 @@
 import os
 import argparse
 import csv
+import cv2
+import numpy as np
 
 # ==========================================================================================
 # Main & Arguments
@@ -16,6 +18,8 @@ def main(args):
     header = read_file_header(buffer, args.input_file)
 
     export_header(args.input_file, args.output_path, header)
+
+    export_images(buffer, args.output_path, args.input_file, header)
 
     if (args.append_filename):
         append_filename_with_header_timestamp(args.input_file, args.output_path, header, buffer)
@@ -84,9 +88,29 @@ def read_file_header(buffer, input_file):
         "filename": filename
     }
 
-    print(header)
-
     return header
+
+# ==========================================================================================
+# Images
+# ==========================================================================================
+def export_images(full_buffer, filepath, input_file, header):
+    image_width = 512
+    image_height = 512
+    n_images = 60
+
+    buffer = trim_buffer(full_buffer, 512, image_width*image_height)
+
+    save_image(buffer, image_width, filepath, input_file, header["timestamp"])
+
+def trim_buffer(buffer, start_byte, length):
+    trimmed_buffer = buffer[start_byte:start_byte + length]
+    return trimmed_buffer
+
+def save_image(buffer, width, filepath, input_file, timestamp):
+    filename = "{}.{}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp)
+    image = np.frombuffer(buffer, dtype=np.uint8)
+    image.reshape(-1, width)
+    cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
 # I/O
