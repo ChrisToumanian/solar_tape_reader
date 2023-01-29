@@ -13,7 +13,7 @@ import csv
 def main(args):
     buffer = read_file_to_buffer(args.input_file)
 
-    header = read_file_header(buffer)
+    header = read_file_header(buffer, args.input_file)
 
     export_header(args.input_file, args.output_path, header)
 
@@ -31,7 +31,7 @@ def parse_arguments():
 # ==========================================================================================
 # Header
 # ==========================================================================================
-def read_file_header(buffer):
+def read_file_header(buffer, input_file):
     month = buffer[4*0]
     day = buffer[4*1]
     year = buffer[4*2]
@@ -60,6 +60,7 @@ def read_file_header(buffer):
         nrecs = (lsize * size * nlines + 8192) / 8192 + 1
 
     timestamp = "{:04d}-{:02d}-{:02d}_{:02d}{:02d}{:02d}{:02d}".format(year, month, day, hour, minute, second, tick)
+    filename = "{}.{}.dat".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp)
 
     header = {
         "month": month,
@@ -79,8 +80,11 @@ def read_file_header(buffer):
         "ostat": ostat,
         "c1": c1,
         "c2": c2,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "filename": filename
     }
+
+    print(header)
 
     return header
 
@@ -99,8 +103,8 @@ def append_filename_with_header_timestamp(input_file, output_path, header, buffe
         binary_file.write(buffer)
 
 def export_header(input_file, output_path, header):
-    filename = "{}.{}_header.csv".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
-    field_names = ["timestamp", "nlines", "nrecs", "nsamps", "dtype", "dtype", "dsize", "lsize", "dtime", "ostat", "c1", "c2"]
+    field_names = ["timestamp", "filename", "nlines", "nrecs", "nsamps", "dtype", "dtype", "dsize", "lsize", "dtime", "ostat", "c1", "c2"]
+    filename = "{}.{}.header.csv".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
 
     with open(f"{output_path}{filename}", 'w') as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=field_names, extrasaction="ignore")
