@@ -94,24 +94,25 @@ def read_file_header(buffer, input_file):
 # Images
 # ==========================================================================================
 def export_images(full_buffer, filepath, input_file, header):
-    image_width = 512
-    image_height = 512
+    w = 512
+    h = 512
     n_images = 60
 
+    # Trim header
     buffer = trim_buffer(full_buffer, 512, len(full_buffer))
 
-    buffer = trim_buffer(buffer, 0, image_width*image_height)
-
-    save_image(buffer, image_width, filepath, input_file, header["timestamp"])
+    for i in range(0, n_images):
+        cropped_buffer = trim_buffer(buffer, w*h*i, w*h*i + w*h)
+        save_image(cropped_buffer, w, filepath, input_file, i, header["timestamp"])
 
 def trim_buffer(buffer, start_byte, end_byte):
     trimmed_buffer = buffer[start_byte:end_byte]
     return trimmed_buffer
 
-def save_image(buffer, width, filepath, input_file, timestamp):
-    filename = "{}.{}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp)
-    image = np.frombuffer(buffer, dtype=np.uint8)
-    image = np.reshape(image, (-1, width))
+def save_image(buffer, width, filepath, input_file, image_number, timestamp):
+    filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
+    image = np.frombuffer(buffer, dtype=np.uint8) # Convert to UINT8
+    image = np.reshape(image, (-1, width)) # Reshape to 2D array
     cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
