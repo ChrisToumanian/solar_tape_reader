@@ -105,15 +105,16 @@ def export_images(full_buffer, filepath, input_file, header):
 
     for i in range(0, n_images):
         cropped_buffer = trim_buffer(buffer, w*h*i, w*h*i + w*h)
-        save_image(cropped_buffer, w, filepath, input_file, i, header["timestamp"])
+        image = np.reshape(cropped_buffer, (-1, w)) # Reshape to 2D array
+        image = np.roll(image, shift=-256*i, axis=1)
+        save_image(image, w, filepath, input_file, i, header["timestamp"])
 
 def trim_buffer(buffer, start_byte, end_byte):
     trimmed_buffer = buffer[start_byte:end_byte]
     return trimmed_buffer
 
-def save_image(buffer, width, filepath, input_file, image_number, timestamp):
+def save_image(image, width, filepath, input_file, image_number, timestamp):
     filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
-    image = np.reshape(buffer, (-1, width)) # Reshape to 2D array
     #plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(2425), vmax=np.nanmax(3100)) # Normalized
     cv2.imwrite(f"{filepath}{filename}", image)
 
@@ -132,7 +133,7 @@ def append_filename_with_header_timestamp(input_file, output_path, header, buffe
         binary_file.write(buffer)
 
 def export_header(input_file, output_path, header):
-    field_names = ["timestamp", "filename", "nlines", "nrecs", "nsamps", "dtype", "dtype", "dsize", "lsize", "dtime", "ostat", "c1", "c2"]
+    field_names = ["timestamp", "filename", "nlines", "nrecs", "nsamps", "dtype", "dsize", "lsize", "dtime", "ostat", "c1", "c2"]
     filename = "{}.{}.header.csv".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"])
 
     with open(f"{output_path}{filename}", 'w') as csv_file:
