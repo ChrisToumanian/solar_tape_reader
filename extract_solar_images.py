@@ -9,6 +9,11 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+N_IMAGES = 60
+IMAGE_WIDTH = 1024
+IMAGE_HEIGHT = 1024
+HORIZONTAL_TRANSLATION = 256
+
 # ==========================================================================================
 # Main & Arguments
 # ==========================================================================================
@@ -20,7 +25,7 @@ def main(args):
 
     export_header(args.input_file, args.output_path, header)
 
-    export_images(buffer, args.output_path, args.input_file, header)
+    export_images(buffer, args.output_path, args.input_file, header, args.visual_output)
 
     if (args.append_filename):
         append_filename_with_header_timestamp(args.input_file, args.output_path, header, buffer)
@@ -30,6 +35,7 @@ def parse_arguments():
     parser.add_argument("-i", "--input_file", help="Input DAT file", type=str, required=True)
     parser.add_argument("-o", "--output_path", help="Output path", type=str, default="out/", required=False)
     parser.add_argument("-a", "--append_filename", help="Append filename option", action="store_true")
+    parser.add_argument("-v", "--visual_output", help="Export visual representations of images", action="store_true")
     args = parser.parse_args()
     return args
 
@@ -94,29 +100,27 @@ def read_file_header(buffer, input_file):
 # ==========================================================================================
 # Images
 # ==========================================================================================
-def export_images(full_buffer, filepath, input_file, header):
-    w = 1024
-    h = 1024
-    n_images = 60
+def export_images(full_buffer, filepath, input_file, header, visual_output):
+    w = IMAGE_WIDTH
+    h = IMAGE_HEIGHT
 
     # Trim header
     buffer = trim_buffer(full_buffer, 512, len(full_buffer))
-    buffer = np.frombuffer(buffer, dtype=np.uint16) # Convert to UINT16
-
-    for i in range(0, n_images):
+    buffer = np.frombuffer(buffer, dtype=np.uint16) # Convert to UINT16ear
+    for i in range(0, N_IMAGES):
         cropped_buffer = trim_buffer(buffer, w*h*i, w*h*i + w*h)
         image = np.reshape(cropped_buffer, (-1, w)) # Reshape to 2D array
-        image = np.roll(image, shift=-256*i, axis=1)
-        save_image(image, w, filepath, input_file, i, header["timestamp"])
+        image = np.roll(image, shift=-HORIZONTAL_TRANSLATION*i, axis=1)
+        filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"], i)
+        cv2.imwrite(f"{filepath}{filename}", image)
+
+        if (visual_output):
+            filename = "{}.{}.{:03d}.visual_ref.png".format(os.path.basename(input_file).rsplit('.',1)[0], header["timestamp"], i)
+            plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(2425), vmax=np.nanmax(3100)) # Normalized
 
 def trim_buffer(buffer, start_byte, end_byte):
     trimmed_buffer = buffer[start_byte:end_byte]
     return trimmed_buffer
-
-def save_image(image, width, filepath, input_file, image_number, timestamp):
-    filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
-    #plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(2425), vmax=np.nanmax(3100)) # Normalized
-    cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
 # I/O
