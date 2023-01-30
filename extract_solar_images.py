@@ -95,16 +95,16 @@ def read_file_header(buffer, input_file):
 # Images
 # ==========================================================================================
 def export_images(full_buffer, filepath, input_file, header):
-    w = 512
-    h = 512
+    w = 1024
+    h = 1024
     n_images = 60
-    n_gap_lines = 60
 
     # Trim header
-    buffer = trim_buffer(full_buffer, 510, len(full_buffer))
+    buffer = trim_buffer(full_buffer, 512, len(full_buffer))
+    buffer = np.frombuffer(buffer, dtype=np.uint16) # Convert to UINT16
 
     for i in range(0, n_images):
-        cropped_buffer = trim_buffer(buffer, w*h*i + w*n_gap_lines, w*h*i + w*h)
+        cropped_buffer = trim_buffer(buffer, w*h*i, w*h*i + w*h)
         save_image(cropped_buffer, w, filepath, input_file, i, header["timestamp"])
 
 def trim_buffer(buffer, start_byte, end_byte):
@@ -112,10 +112,9 @@ def trim_buffer(buffer, start_byte, end_byte):
     return trimmed_buffer
 
 def save_image(buffer, width, filepath, input_file, image_number, timestamp):
-    filename = "{}.{}.{:03d}.normalize.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
-    image = np.frombuffer(buffer, dtype=np.uint16) # Convert to UINT16
-    image = np.reshape(image, (-1, width)) # Reshape to 2D array
-    #plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(image), vmax=np.nanmax(image)) # Normalized
+    filename = "{}.{}.{:03d}.png".format(os.path.basename(input_file).rsplit('.',1)[0], timestamp, image_number)
+    image = np.reshape(buffer, (-1, width)) # Reshape to 2D array
+    #plt.imsave(f"{filepath}{filename}", image, cmap='gray', vmin=np.nanmin(2425), vmax=np.nanmax(3100)) # Normalized
     cv2.imwrite(f"{filepath}{filename}", image)
 
 # ==========================================================================================
