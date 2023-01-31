@@ -83,6 +83,9 @@ static char id_string[] = "sunio version of 1000-01-05 13:00 drs";
  *	Modified 03/16/99 for Y2K.  Added file formats 5 & 6.  Changed spec 
  *	for year in FRAMCP format to allow 4 digit year.  Use new FITS 4-digit 
  *	year format when year > 2000.
+ *
+ *  Modified 01/31/23 to support reading binary backups of the tapes from
+ *  Linux operating systems.
  */
 
 
