@@ -59,7 +59,6 @@ def read_file_header(buffer, input_file):
     dtime = buffer[4*24]
     ostat = buffer[4*25]
     c1 = buffer[4*64]
-    c2 = buffer[4*66]
     timestamp = ""
 
     if year < 10:
