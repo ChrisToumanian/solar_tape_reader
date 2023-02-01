@@ -1,2 +1,2 @@
 #!/bin/bash
-sudo tar -tzf /dev/st0
+sudo tar -tf /dev/st0

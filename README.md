@@ -32,7 +32,11 @@ pip install -r requirements.txt
 2. Move the DAT files created from `.\tape_controller\tape_data\` to `.\staging`.
 3. Open in WSL and run `./sunio/sunio -i -d -Ffits`.
 
-## 📼Tape Deck Requirements
+## 📼Tape Deck Requirements for Ubuntu
+1. Install Hercules with `sudo apt install hercules`
+2. Run `tape_controller/tape_copy.sh /dev/st0 <output filename>`
+
+## 📼Tape Deck Requirements for Windows
 1. dd.exe to read from the tape deck - Windows dd.exe is available here: http://www.chrysocome.net/dd
 2. mt.exe to rewind the tape - Windows mt.exe is available in a collection of utilities found here in LCUtils.zip: https://www.tecno-notas.com/winnt.htm
 3. A tape deck - We're currently using a Sun XL 8mm Exebyte drive
