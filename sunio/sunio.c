@@ -642,12 +642,12 @@ byte hbuff[HDRSIZE];
 char program_name[] = "sunio";
 #ifndef NovaStor
 // char def_tape_name[]="/dev/nrmt%d";
-char def_tape_name[]="../staging/TAPE.DAT";
+char def_tape_name[]="../staging/tape.dat";
 #else /* NovaStor */
 char def_tape_name[]="Unit %d";
 #endif /* NovaStor */
-char def_rmt_tape_name[]="%s:../staging/TAPE.DAT";
-char def_disk_mode_tape_name[]="TAPE.DAT";
+char def_rmt_tape_name[]="%s:../staging/tape.dat";
+char def_disk_mode_tape_name[]="tape.dat";
 char tape_name[100];
 char host[25] = "";
 char *spec_tape_name = NULL;	/* specified tape name (-ttape_name) */
