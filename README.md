@@ -26,6 +26,12 @@ python -m venv venv
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
+
+## How To Use
+1. To ingest tapes navigate to `.\tape_controller` and run `.\extract_tape.ps1 <tape name> <start tape, usually 0> <number of tapes>` in PowerShell.
+2. Move the DAT files created from `.\tape_controller\tape_data\` to `.\tape_data_staging`.
+3. Open in WSL and run `./sunio/sunio -i -d -Ffits`.
+
 ## 📼Tape Deck Requirements
 1. dd.exe to read from the tape deck - Windows dd.exe is available here: http://www.chrysocome.net/dd
 2. mt.exe to rewind the tape - Windows mt.exe is available in a collection of utilities found here in LCUtils.zip: https://www.tecno-notas.com/winnt.htm
