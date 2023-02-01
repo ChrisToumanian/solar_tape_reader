@@ -1,0 +1,1413 @@
+static char id_string[] = "sunio version of 880901 13:45 drs";
+/*
+ *	sunio - read in sun pictures, reformating I*2's & splitting into
+ *	one file per image.  Write out sun pictures to tape, using
+ *	a log file made by "sunio -i", or a reasonable facsimile.
+ *	Adapted 11/87 by Dennis R. Smith, Univ. of Southern Calif. from:
+ *
+ *      tcp - this routine runs in input (-i) and output (-o) modes. On
+ *      input, it reads a tape's contents (out to the double tape-marks)
+ *      and writes that data to files in a the current directory, along
+ *      with a file of data which will allow reconstruction of the tape
+ *      in the output mode.
+ *
+ *      Copyright (C) 1983, 1984 Lyle McElhaney
+ *      Permission to copy for non-commercial use granted under condition
+ *      that this notice remains intact in the copy.
+ *
+ *      Address: 2489 W. Ridge Rd., Littleton, CO 80120
+ *      ....denelcor!lmc
+ * 
+ *	Modified 9/12/86 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Fix multiple options.
+ *	Add -v (verbose) switch.
+ *
+ *	Modified 2/12/87 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Added -e (error action) switch: On error, behave as if user
+ *	 typed the character following the '-e'.  Options: Abort, Ignore,
+ *	 Eof (treat as tape mark).
+ *
+ *	Modified 4/10/87 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Added -hHOSTNAME to allow for 'remote tcp': rmt code stolen
+ *	from rtar.
+ *
+ *	Modified 5/15/88 to call newer rmt library
+ *
+ *	Modified 7/11/88 to un-vaxize header as well as data.
+ *	  Header is treated as Integer*4, while data is treated as Integer*2
+ *
+ */
+
+/********************************
+ *				*
+ *	Includes, Defines	*
+ *				*
+ ********************************/
+
+#ifdef vms
+#define NO_REMOTE
+#define unlink delete
+#define link rename		/* careful with this! works in the case here */
+#define index strchr
+#define bcopy(from,to,size) memcpy(to,from,size)
+#endif
+
+#include <stdio.h>
+#ifndef vms
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/file.h>
+#else vms
+#include <types.h>
+#include <file.h>
+#endif vms
+#ifndef O_RDONLY
+#include <fcntl.h>		/* for UNICOS */
+#endif O_RDONLY
+#include <errno.h>
+#include <signal.h>
+#ifndef vms
+#ifndef cray
+#include <sys/mtio.h>
+#else cray
+#include "mtio.h"
+#endif cray
+#include "rmt.h"
+#endif vms
+
+#ifndef L_SET			/* for UNICOS */
+#define L_SET 0
+#endif
+
+#define HDRVAXFMT 1		/* header is vax format on disk */
+#define MAXBUF 32768            /* maximum tape physical record size */
+#define HDRSIZE 512
+#define MAXRETRIES 9
+#define MAXFRAMES 120		/* maximum number of -f options */
+#define FMTSIZ 1024       /* limit on size of filenames created + 1 */
+/* #define BLKFACTOR 14 */
+#ifndef YES
+#define NO 0
+#define YES 1
+#endif
+#define NYU 2
+
+/* Exit Codes */
+#define ERR_ARG		EINVAL	/* bad command line arguments */
+#define ERR_IO		EIO	/* I/O error */
+#define ERR_OPEN	128+1	/* Could not open a file */
+#define ERR_EMPTY	128+2	/* no frames in file */
+#define ERR_INT		128+3	/* interrupted (^C) */
+#define ERR_HDR		128+4	/* bad header */
+
+/********************************
+ *				*
+ *	Function Prototypes	*
+ *				*
+ ********************************/
+
+int	open();
+int	read();
+int	write();
+int	close();
+int	ioctl();
+long	lseek();
+
+void finish_disk_file();
+void parse_hdr();
+void badhdr();
+void trans_hdr();
+void to_tape(), from_tape();
+#ifndef vms
+void showstatus();
+#endif vms
+void delete_hdr_and_data();
+void rename_diskfile();
+void abort_file();
+void abort();
+
+#ifndef sun
+#ifndef cray
+#define HANDLER_RETURN int
+#else
+#define HANDLER_RETURN void
+#endif cray
+#else
+#define HANDLER_RETURN void
+#endif sun
+
+HANDLER_RETURN sigint_handler();
+HANDLER_RETURN (*defint_handler)();
+
+extern char *index();
+extern int errno;
+
+/********************************
+ *				*
+ *	GLobal Variables	*
+ *				*
+ ********************************/
+
+char program_name[] = "sunio";
+char dnrtape[]="/dev/nrmt%d";
+char dtape[]="/dev/rmt%d";
+char rdnrtape[]="%s:/dev/nrmt%d";
+char rdtape[]="%s:/dev/rmt%d";
+char disk_mode_dnrtape[]="./nrmt%d";
+char disk_mode_dtape[]="./rmt%d";
+int tape_drive_no = 8;
+char host[25] = "\000", tape[100], nrtape[100];
+char *tape_file = NULL;
+/* char ffh[]="tcp,f"; */      /* headers for temp filenames */
+char nfh[]="sunio";
+char format[]="%s%02d%05d"; /* format of filenames. args: [fcn]fh, tapen, nfile */
+char cfile[FMTSIZ] = "\0",
+     hfile[FMTSIZ] = "H",
+     ffile[FMTSIZ] = "D";
+char hprefix = 'H',
+     dprefix = 'D';
+char hdrprefix = 0;
+int dprefix_set = 0;
+char buff[MAXBUF];
+char obuff[MAXBUF];
+char hbuff[HDRSIZE];
+char buf[20];
+char *p,*q;
+int nfile;
+int do_mode=O_CREAT|O_EXCL|O_WRONLY; /* disk open mode */
+int disk_mode=NO;
+int use_stdin=NO;
+int multi_file=NO;
+int rmt=NO;			/* remote file if TRUE */
+int verbose=NO;
+int muy_verbose=NO;
+int debug=NO;
+int reclen = 0;
+int pad_records = -1;		/* pad records to recsize */
+int vicar_padding = 0;
+int scan_only=NO;
+int skip = NO;
+char *hdir = "\0";		/* header directory if not . */
+int tapen=0;
+int frame_begin[MAXFRAMES+1] = {0,-1};
+int frame_count[MAXFRAMES] = {32767};
+int frame_ptr = 0;
+int inmode=NYU;         /* input mode - not yet set. User must choose. */
+int wrmode=O_WRONLY;
+FILE *ctldev;
+int diskfd = -1;
+int hdrfd = -1;
+int tapefd;
+long recno, nrec, isize = 0, osize = 0, esize = 0, filen;
+int nframes = 0;		/* number of freames seen */
+int fframes = 0;		/* number of frames in this file */
+int firstrec = 0;
+int retries = 0;
+int framcp=NO;			/* default is not framcp format */
+int hdrflag = 0;
+#define HDR_BAD_SIZE 1		/* some size is bad in the header */
+#define HDR_BAD_DATE 2		/* the date/time is bad in the header */
+
+#ifdef cray
+int namfmt=1;			/* new format: YYMMDD:HHMMSS */
+#else
+#ifdef vms
+int namfmt=2;			/* format 2: YYMMDD.HHMMSS */
+#else
+int namfmt=0;			/* old format: YY-MM-DD:HH:MM:SS.TTT */
+#endif vms
+#endif cray
+
+int kludge=0;
+#define k_1 1
+#define k_2 2
+#define k_4 4
+#define k_8 8
+#define k_16 16
+#define k_32 32
+#define k_64 64
+#define k_128 128
+
+int convmode=NO;        /* conversational mode default to no */
+int action=0;			/* no forced action */
+
+#ifndef vms
+struct mtop mtop;
+#endif vms
+
+long int month, day, year, hour, minute, second, tick,
+     nlines, nrecs, dtype, dsize, lsize, rsize;
+int hrec = 0;
+int nbytes;
+long int i4pickup();
+long int i4pickup_vax();
+int n, i, rem;
+void usage();
+
+
+/********************************
+ *				*
+ *	Main Program		*
+ *				*
+ ********************************/
+
+main (argc, argv)
+    int argc;
+    char **argv;
+{
+
+    argv++;
+    while (argc > 1) {
+	p = *argv;
+	if (*p == '-') {
+	    p++;
+	    if (*p != '\0') {
+		switch (*p++) {
+		  case 'c':	/* -c = 'Conversational' (on errors) */
+		    convmode = YES;
+		    break;
+		  case 'C':	/* -Cfile specifies name of the control file */
+		    strcpy(cfile,p);
+		    break;
+		  case 'd':	/* -d = 'Disk_Mode' */
+		    disk_mode = YES;
+		    wrmode = O_WRONLY|O_CREAT;
+		    break;
+		  case 'D':	/* -D = Debug */
+		    debug = YES;
+		    break;
+		  case 'e':	/* -eX = Automatically take action X on error */
+		    /*        Actions: 	'a' = abort */
+		    /*                 	'e' = treat as EOF */
+		    /* 			'i' = ignore */
+		    /*     		'r' = retry */
+		    if (((action = *p++) != 'r' && action != 'e' &&
+			 action != 'i'))
+			action == 'a';
+		    convmode = YES;
+		    break;
+		  case 'f':	/* -fB,C select frames */
+		    if (frame_ptr < MAXFRAMES) {
+			if (sscanf(p,"%d,%d",&frame_begin[frame_ptr],
+				   &frame_count[frame_ptr]) != 2)
+			    usage();
+			frame_begin[++frame_ptr] = -1;
+		    }
+		    break;
+		  case 'F':	/* -F = 'FRAMCP mode' */
+		    framcp = YES;
+		    break;
+#ifndef NO_REMOTE
+		  case 'h':	/* -hHOSTNAME use tape on remote host */
+		    rmt = 1;	/* remote tape */
+		    strcpy(host,p); /* copy host name */
+		    break;
+#endif
+		  case 'H':	/* -Hdirectory = get headers from directory */
+		    hdir = p;
+		    break;
+		  case 'i':	/* -i = 'Input' mode ('tape' to disk files */
+		    if (inmode != NYU) usage();
+		    inmode = YES;
+		    break;
+		  case 'k':	/* kludge */
+		    kludge |= atoi(p);
+		    break;
+		  case 'm':	/* -m = Multifile (read all files) */
+		    multi_file = YES;
+		    break;
+		  case 'n':	/* -nXX = 'Tape number': allows multiple tapes */
+		    tapen = atoi (p); /*        in one directory */
+		    break;
+		  case 'N':	/* new format file names */
+		    if (*p == '\0')
+			namfmt = 1; /* "new" format */
+		    else
+			namfmt = atoi(p);
+		    break;
+		  case 'o':	/* -o = 'Output' mode (disk file to 'tape' */
+		    if (inmode != NYU) usage();
+		    inmode = NO;
+		    break;
+		  case 'O':	/* old format file names */
+		    namfmt = 0;
+		    break;
+		  case 'p':	/* -pNN VICAP Padding */
+		    vicar_padding = atoi(p);
+		    break;
+		  case 'P':	/* -Px prefix character for data file */
+		    {
+			dprefix = *p++;
+			if (((dprefix >= 'A') && (dprefix <  'H')) || /* not H */
+			    ((dprefix >  'H') && (dprefix <= 'Z')) ||
+			    ((dprefix >= 'a') && (dprefix <= 'z'))) {
+			    *ffile = dprefix;
+			    dprefix_set++;
+			    break;
+			} else {
+			    fprintf(stderr,"%s: Invalid prefix character\n",
+				    program_name);
+			    exit(ERR_ARG);
+			}
+		    }
+		  case 'r':
+		    if (*p == '\0') {
+			pad_records = 0; /* don't pad records */
+		    } else {
+			pad_records = 1; /* pad records to specified size */
+			reclen = atoi(p);
+			if (reclen > MAXBUF) reclen = MAXBUF;
+			if (reclen == 0) pad_records = -1; /* based on rsize */
+		    }
+		    break;
+		  case 's':
+		    scan_only = YES;
+		    inmode = YES;
+		    break;
+		  case 'S':
+		    use_stdin = YES;
+		    break;
+		  case 't':	/* -tdevice_name : specify device fully */
+				/* overrides numeric tape specification */
+		    tape_file = p;
+		    break;
+		  case 'v':	/* -v = 'Verbose' mode: tell each file processed */
+		    verbose = YES;
+		    break;
+		  case 'V':	/* -V = 'Muy Verbose' mode: babble a lot */
+		    verbose = muy_verbose = YES;
+		    break;
+		  case '2':	/* XX = use mag tape drive XX */
+		  case '3':
+		  case '4':
+		  case '5':
+		  case '6':
+		  case '7':
+		  case '8':
+		  case '9':
+		  case '0':
+		    tape_drive_no = *(p-1) - '0';
+		    break;
+		  case '1':
+		    if (*p >= '0' && *p <= '5')
+			tape_drive_no = 10 + *p - '0';
+		    else
+			tape_drive_no = 1;
+		    break;
+		  default:
+		    usage();
+		}		/* switch */
+	    }
+	    else
+		usage();
+	    argc--;
+	    argv++;
+	}
+	else
+	    usage();
+    }				/*  while argc > 1 */
+
+/********************************
+ *				*
+ *	Check options, setup	*
+ *				*
+ ********************************/
+
+    if (inmode == NYU)
+	usage();
+    if (framcp && scan_only) {
+	fprintf(stderr,"%s: Scan mode and FRAMCP mode are incompatable\n",
+		program_name);
+	exit(ERR_ARG);
+    } else if (framcp && !inmode) {
+	fprintf(stderr,"%s: Output from FRAMCP format not yet supported\n",
+		program_name);
+	exit(ERR_ARG);
+    }
+
+    if (disk_mode) {
+	sprintf(tape,disk_mode_dtape,tape_drive_no);
+	sprintf(nrtape,disk_mode_dnrtape,tape_drive_no);
+    } else if (!rmt) {
+	sprintf(tape,dtape,tape_drive_no);
+	sprintf(nrtape,dnrtape,tape_drive_no);
+    } else {
+	sprintf(tape,rdtape,host,tape_drive_no);
+	sprintf(nrtape,rdnrtape,host,tape_drive_no);
+    }	
+    if (tape_file != NULL) {
+	if (!rmt) {
+	    strcpy(tape,tape_file);
+	    strcpy(nrtape,tape_file);
+	} else {
+	    sprintf(tape,"%s:%s",host,tape_file);
+	    sprintf(nrtape,"%s:%s",host,tape_file);
+	}
+    }
+    if (cfile[0] == '\0' && !scan_only)
+	sprintf (cfile, format, nfh, tapen, 0);
+
+    defint_handler = signal(SIGINT,sigint_handler);
+
+    if (inmode) {
+	from_tape();
+    } else {
+	to_tape();
+    }
+}
+
+/************************************************
+ *						*
+ *	from_tape: -i,-s routines		*
+ *						*
+ ************************************************/
+void
+from_tape()
+{
+    /*
+     *      input mode - read tape into files.
+     */
+    if (kludge & k_128)
+	do_mode &= ~O_EXCL;	/* replace file if it exists */
+    nbytes = sizeof buff;
+    if (cfile[0] != '\0') {
+	if ((ctldev = fopen (cfile, "w+")) == NULL) {
+	    fprintf (stderr, "%s: cannot open %s\n", program_name, cfile);
+	    perror(program_name);
+	    exit(ERR_OPEN);
+	}
+	setbuf(ctldev,NULL);
+    }
+
+    if (use_stdin) {
+	if (verbose) fprintf(stderr,"%s: using stdin\n", program_name);
+	tapefd = 0;
+    } else {
+	if (verbose)
+	    if (rmt)
+		fprintf(stderr,"Opening %s on %s for read\n", nrtape, host);
+	    else
+		fprintf(stderr,"Opening %s for read\n", nrtape);
+	tapefd = rmtopen(nrtape, O_RDONLY,0600);
+	if (tapefd < 0) {
+	    fprintf (stderr, "%s: cannot open %s\n", program_name, nrtape);
+	    perror(program_name);
+	    exit(ERR_OPEN);
+	}
+#ifndef vms
+	if (debug) showstatus(tapefd);
+#endif vms
+    }
+    filen = 0;
+    frame_ptr = 0;
+    for (;;) {			/* for each file on tape */
+	int is_header;
+
+	recno = 0;
+	if (disk_mode) {
+	    nbytes = HDRSIZE;
+	    is_header = 1;
+	}
+      reread:
+	while ((n = rmtread(tapefd, buff, nbytes)) > 0) {
+	    isize += n;
+	    if (kludge & k_1) {
+		n = rmtread(tapefd, buff, nbytes);
+		isize = n;
+		kludge -= k_1;
+	    }
+	    if (isize == HDRSIZE && nframes == 1) {
+		/* kludge for extra header at beginning of some tapes */
+		n = rmtread(tapefd, buff, nbytes);
+		isize = n;
+	    }
+
+	    /************************************
+	     *					*
+	     *		Header Processing	*
+	     *					*
+	     ************************************/
+
+	    if (!disk_mode)
+		is_header =  (n == HDRSIZE);
+		
+	    if (is_header) {
+		is_header = 0;
+		/* this is header */
+		if (nframes >= frame_begin[frame_ptr]+frame_count[frame_ptr]) { /* enough frames? */
+		    if (frame_begin[++frame_ptr] < 0) {
+			isize -= n; /* yes, get actual size of frame */
+			n = 0;	/* fake an eof */
+			break;
+		    }
+		}
+		nframes++;
+		fframes++;
+#ifdef HDRVAXFMT
+		bcopy(buff,hbuff,HDRSIZE); /* save last header */
+#else
+		trans_hdr(buff,hbuff,HDRSIZE); /* save last header */
+#endif
+		isize -= HDRSIZE;
+		finish_disk_file(); /* finish disk file if any */
+		firstrec = recno+1;
+		parse_hdr(hbuff);
+		if (disk_mode) {
+		    hrec = recno + nrecs - 1;
+		    nbytes = rsize;
+		    if (muy_verbose)
+			fprintf(stderr,"### hrec = %d, nbytes = %d\n",
+				hrec,nbytes);
+		}
+		esize = nlines*dsize*lsize;
+		if (pad_records < 0)
+		    reclen = rsize;
+
+		if (!dprefix_set && (hdrprefix != 0))
+		    dprefix = hdrprefix;
+
+		if (framcp) {
+		    if (dprefix == 'D')
+			dprefix = 'f';
+		}
+			    
+		switch (namfmt) {
+		  case 0:	/* original, long format */
+		    if (tapen) {
+			sprintf(ffile,
+				"%c%03d,%02d-%02d-%02d:%02d:%02d:%02d.%03d",
+				dprefix,tapen,year,month,day,hour,minute,
+				second,tick);
+		    } else {
+			sprintf(ffile,
+				"%c%02d-%02d-%02d:%02d:%02d:%02d.%03d",
+				dprefix,year,month,day,hour,minute,
+				second,tick);
+		    }
+		    break;
+		  case 1:	/* short format */
+		    sprintf(ffile,
+			    "%c%02d%02d%02d:%02d%02d%02d",
+			    dprefix,year,month,day,hour,minute,second);
+		    break;
+		  case 2:	/* VMS format */
+		    sprintf(ffile,
+			    "%c%02d%02d%02d.%02d%02d%02d",
+			    dprefix,year,month,day,hour,minute,second);
+		    break;
+		  case 3:	/* IBM format */
+		    sprintf(ffile,
+			    "%c%02d%02d%02d.T%02d%02d%02d",
+			    dprefix,year,month,day,hour,minute,second);
+		    break;
+		}		/* switch (namfmt) */
+		if (*hdir != '\0')
+		    sprintf(hfile,"%s/H%s",hdir,ffile+1);
+		else
+		    strcpy(hfile+1,ffile+1);
+
+		if (framcp) {
+		    if (nframes == 1) {
+			fprintf(stderr,"Tape -> %s\n",ffile);
+			if ((diskfd = open(ffile,O_CREAT|O_EXCL|O_WRONLY,0666)) < 0) {
+			    fprintf (stderr,"%s: cannot open %s\n",
+				     program_name, ffile);
+			    perror(program_name);
+			    exit(ERR_OPEN);
+			}
+			if (write(diskfd,hbuff,n) < 0) {
+			    fprintf(stderr,"%s: cannot write disk header\n",
+				    program_name);
+			    perror(program_name);
+			    exit(ERR_IO);
+			}
+		    }
+		    if (write(diskfd,hbuff,n) < 0) {
+			fprintf(stderr,"%s: cannot write frame header\n",
+				program_name);
+			perror(program_name);
+			exit(ERR_IO);
+		    }
+		}
+
+		skip = scan_only || (nframes <= frame_begin[frame_ptr]);
+		if (scan_only || (framcp && verbose) || (skip && verbose))
+		    fprintf(stderr,"[%s]", ffile+1);
+		else if (verbose) {
+		    if (kludge & k_2)
+			fprintf(stderr,"Tape -> H%s",ffile+1);
+		    else
+			fprintf(stderr,"Tape -> %s",ffile);
+		}
+		if (
+		    !skip ||
+		    (scan_only && cfile[0] != '\0')
+		    )
+		    fprintf(ctldev,"%s\n",ffile);
+		/* write header file */
+		if (!skip && !framcp) {
+		    if ((hdrfd =
+			 open (hfile,do_mode,0666)) < 0) {
+			if (errno != EEXIST) {
+			    fprintf(stderr,
+				    "\n%s: cannot open %s\n",
+				    program_name, hfile);
+			    perror(program_name);
+			    exit(ERR_OPEN);
+			} else {
+			    if (verbose)
+				fprintf(stderr," [H exists]");
+			    else
+				fprintf(stderr,"[%s exists]\n",hfile);
+			}
+		    } else {
+			if (write(hdrfd,buff,n) <= 0) {
+			    fprintf (stderr,
+				     "%s: file write error #%d in %s\n", program_name,
+				     errno, hfile);
+			    perror(program_name);
+			    abort(ERR_IO);
+			}
+			close(hdrfd);
+			hdrfd = -1;
+		    }
+		    /* open data file */
+		    if (!(kludge & k_2)) {
+			if ((diskfd =
+			     open (ffile,do_mode,0666)) < 0) {
+			    if (errno != EEXIST) {
+				fprintf (stderr,
+					 "\n%s: cannot open %s\n",
+					 program_name, ffile);
+				perror(program_name);
+				exit(ERR_OPEN);
+			    } else {
+				if (verbose)
+				    fprintf(stderr," [%c exists]",*ffile);
+				else
+				    fprintf(stderr,"[%s exists]\n",ffile);
+			    }
+			}
+		    }		/* if (!(kludge & k_2)) */
+		}		/* if (!skip && !framcp) */
+		if (verbose || scan_only)
+		    fprintf(stderr,"\n");
+		recno++;
+		continue;
+	    }			/* if (is_header) */
+	    
+
+	    /************************************
+	     *				     	*
+	     *	   Data Record Procesing     	*
+	     *				     	*
+	     ************************************/
+
+	    if ((recno == 0) && (esize == 0)) {	/* no header yet */
+		fprintf(stderr,
+			"%s: first record is not a header (size = %d), skipping...\n",
+			program_name,n);
+	    }
+	    if ((n != reclen) && (isize < esize) && !disk_mode) {
+		fprintf(stderr,
+			"%s: record %d (%d.%d) is %d bytes (@%d/%d)\n",
+			program_name, recno, nframes-1,recno-firstrec,
+			n,isize-n,esize);
+	    } else if (retries != 0) {
+		fprintf(stderr," OK\n");
+	    }
+	    if  (diskfd > 0) {
+#ifndef vms
+		if ((n != reclen) && (isize < esize)) {
+		    if (kludge & k_32) {
+			if (retries++ >= MAXRETRIES) {
+			    fprintf(stderr,
+				    "maximum retries exceeded\n");
+			} else {
+			    isize -= n;
+			    if (debug) showstatus(tapefd);
+			    fprintf(stderr,
+				    "retrying... ");
+			    mtop.mt_count = 1;
+			    mtop.mt_op = MTBSR;
+			    if (rmtioctl(tapefd, MTIOCTOP, &mtop) >= 0) {
+				if (debug) showstatus(tapefd);
+				goto reread; /* bsr worked */
+			    }
+			    fprintf(stderr,
+				    "error %d in ioctl (BSR); ignoring prev error.\n", errno);
+			    if (debug) showstatus(tapefd);
+			    if (kludge & k_64) {
+				int tmpfd;
+
+				if ((tmpfd =
+				     rmtopen(nrtape, O_RDONLY,0600)) > 0) {
+				    fprintf(stderr,
+					    "%s: Tape reopened as fd=%d, old fd=%d\n",
+					    program_name, tmpfd, tapefd);
+				    tapefd = tmpfd;
+				}
+			    }
+			}	/* if (retries++ >= MAXRETRIES) */
+		    }		/* if (kludge & k_32) */
+		    abort_file(); /* do the right thing */
+		}		/* if ((n != reclen) && (isize < esize)) */
+#endif vms
+		/* Byte Swapping */
+
+		if (!framcp) {
+#ifdef alliant
+		    vec_bmov_s(obuff+1,buff,n/2,2,2);
+		    vec_bmov_s(obuff,buff+1,n/2,2,2);
+#else 
+		    for (p = buff,q = obuff; p < buff+n;) {
+			q[1] = *p++;
+			*q++ = *p++;
+			q++;
+		    }
+#endif alliant
+		}
+
+		/* Padding */
+
+		if (pad_records) {
+		    if (n != reclen) {
+			if (n < reclen) {
+#ifdef alliant
+			    vec_wset(obuff+(n/2*2),32767,(reclen-n+1)/2);
+#else
+			    for (;p < buff+reclen;)
+				*p++ = 0;
+#endif alliant
+			}
+			isize += reclen -n;
+		    }
+		}
+
+		/* Write to disk */
+
+		if (diskfd > 0)	{ /* might have been closed due to error */
+		    if (write (diskfd,
+			       (framcp ? buff : obuff),
+			       (pad_records ? reclen : n)
+			       ) <= 0) {
+			fprintf (stderr, "%s: file write error #%d in %s\n",
+				 program_name, errno, ffile);
+			perror(program_name);
+			abort(ERR_IO);
+		    }
+		    osize += (pad_records ? reclen : n);
+		}
+	    }			/* if (diskfd > 0)  */
+	    recno ++;
+	    retries = 0;
+
+	    if (disk_mode) {
+		if (isize >= esize) {
+		    nbytes = HDRSIZE;
+		    is_header = 1;
+		} else if (esize - isize < nbytes)
+		    nbytes = esize - isize;
+	    }
+	}	/* while ((n = rmtread(tapefd, buff, nbytes)) > 0) */
+	
+
+	/********************************
+	 *				*
+	 *      Error Processing	*
+	 *				*
+	 ********************************/
+
+	if (n == 0) {
+	  Eof:
+#ifndef vms
+	    if (debug) showstatus(tapefd);
+#endif vms
+	    if (recno == 0) {
+		if (verbose) {
+		    if (multi_file)
+			fprintf(stderr,
+				"Number of frames: %d [%d in file %d]\n",
+				nframes,fframes,filen);
+		    else
+			fprintf(stderr,"Number of frames: %d\n",nframes);
+		}
+		if (filen)
+		    break;
+		else
+		    exit(ERR_EMPTY);
+	    } else {
+		filen ++;
+		finish_disk_file();
+		if (verbose) {
+		    if (multi_file)
+			fprintf(stderr,
+				"Number of frames: %d [%d in file %d]\n",
+				nframes,fframes,filen-1);
+		    else
+			fprintf(stderr,"Number of frames: %d\n",nframes);
+		}
+		if (!multi_file) {
+		    break;
+		} else {
+		    fframes = 0;
+		    if (kludge & k_4) { /* exabyte needs reopening to get */
+			/* past the EOF */
+			if (frame_begin[frame_ptr] < 0)
+			    break; /* done, so just quit */
+			if (use_stdin) {
+			    if (verbose) fprintf(stderr,"Using stdin\n");
+			    tapefd = 0;
+			} else {
+			    rmtclose(tapefd); /* exabyte close always fails */
+			    if (verbose)
+				if (rmt)
+				    fprintf(stderr,"Opening %s on %s for read\n",nrtape,host);
+				else
+				    fprintf(stderr,"Opening %s for read\n",nrtape);
+			    if ((tapefd = rmtopen(nrtape, O_RDONLY,0600)) < 0) {
+				fprintf (stderr, "%s: cannot open %s\n",
+					 program_name, nrtape);
+				perror(program_name);
+				exit(ERR_OPEN);
+			    }
+			}
+		    }
+		}
+	    }
+	} else {
+	    fprintf(stderr,"%s: Tape read error %d in record %ld (%d.%d)\n",
+		    program_name, n, recno, nframes-1,recno-firstrec);
+	    perror(program_name);
+	    if (muy_verbose)
+		fprintf(stderr,
+			"###nbytes=%d,esize=%d,isize=%d,osize=%d\n",
+			nbytes,esize,isize,osize);
+
+	    for (;;) {
+		if (convmode) {
+		    fprintf(stderr,"Abort, Retry, Eof, or Ignore? ");
+		    if (*buf = action)
+			fprintf(stderr,"%c\n",action);
+		    if ((action) || gets (buf) != NULL) {
+			if (*buf == 'R' || *buf == 'r') {
+#ifndef vms
+			    if (retries++ >= MAXRETRIES) {
+				fprintf(stderr,
+					"maximum retries exceeded\n");
+				abort(ERR_IO);
+			    } else {
+				mtop.mt_count = 1;
+				mtop.mt_op = MTBSR;
+				if (rmtioctl(tapefd, MTIOCTOP, &mtop) < 0) {
+				    fprintf(stderr,
+					"error %d in ioctl (BSR); ignoring prev error.\n", errno);
+				    recno ++;
+				    retries = 0;
+				}
+			    }
+			    goto reread;
+#else
+			    abort(ERR_IO); /* vms: treat as abort */
+#endif vms
+			} else if (*buf == 'I' || *buf == 'i') {
+			    recno ++;
+			    goto reread;
+			} else if (*buf == 'E' || *buf == 'e')
+			    goto Eof;
+			else if (*buf == 'A' || *buf == 'a')
+			    abort(ERR_IO);
+		    }
+		} else
+		    abort(ERR_IO);
+	    }
+	}
+    }
+
+    /********************************
+     *				    *
+     *        End of Tape	    *
+     *				    *
+     ********************************/
+
+    rmtclose(tapefd);
+    /*	fprintf (ctldev, "0,1\n"); */
+    if (cfile[0] != '\0')
+	fclose (ctldev);
+}				/* end from_tape */
+
+/************************************************
+ *						*
+ *	to_tape: -o routine			*
+ *						*
+ ************************************************/
+void
+to_tape()
+{
+    /*
+     *      output mode - copy files back out to tape.
+     */
+    if ((ctldev = fopen (cfile, "r")) == NULL) {
+	fprintf (stderr, "%s: cannot open %s\n", program_name, cfile);
+	perror(program_name);
+	exit(ERR_OPEN);
+    }
+
+    if (verbose)
+	if (rmt)
+	    fprintf(stderr,"Opening %s on %s for write\n",nrtape,host);
+	else
+	    fprintf(stderr,"Opening %s for write\n",nrtape);
+    if ((tapefd = rmtopen (nrtape,wrmode,0600)) < 0) {
+	fprintf(stderr,"%s: cannot open %s\n", program_name,nrtape);
+	perror(program_name);
+	exit(ERR_OPEN);
+    }
+    recno = 0;
+    for (;;) {
+	if (fgets (ffile, FMTSIZ - 1, ctldev) != NULL) {
+	    if ((p = index(ffile,' ')) != NULL ||
+		(p = index(ffile,'\t')) != NULL ||
+		(p = index(ffile,'\n')) != NULL )
+		*p = '\0';	/* tie off filename */
+	    if (*ffile == '\0' || *ffile == '#') continue;
+	    if (*hdir != '\0')
+		sprintf(hfile,"%s/H%s",hdir,ffile+1);
+	    else
+		strcpy(hfile+1,ffile+1);
+	    if (verbose) fprintf(stderr,"Tape <- %s\n",ffile);
+	    if ((diskfd = open(hfile,O_RDONLY,0)) < 0) {
+		fprintf(stderr,"%s: cannot open %s\n", program_name,hfile);
+		perror(program_name);
+		exit(ERR_OPEN);
+	    }
+	    if ((n = read(diskfd,buff,HDRSIZE)) != HDRSIZE) {
+		fprintf(stderr,"%s: error reading header %s\n",
+			program_name,hfile);
+		perror(program_name);
+		exit(ERR_IO);
+	    }
+	    close(diskfd);
+
+	    parse_hdr(buff);
+
+	    if (buff[0])	/* header goes on tape in vax format  */
+		bcopy(buff,hbuff,HDRSIZE); /* already in vax format */
+	    else
+		trans_hdr(buff,hbuff,HDRSIZE); /* put it in vax format */
+
+	    hbuff[256] = *ffile;	/* save prefix */
+	    hbuff[257] = *ffile ^ 0xFF; /* and verification */
+
+	    if (rmtwrite(tapefd, hbuff, n) <= 0) {
+		fprintf (stderr, "%s: tape write error #%d in %s\n",
+			 program_name, errno, nrtape);
+		perror(program_name);
+		exit(ERR_IO);
+	    }
+	    if ((diskfd = open (ffile, O_RDONLY,0)) < 0) {
+		fprintf (stderr, "%s: cannot open %s\n", program_name, ffile);
+		perror(program_name);
+		exit(ERR_OPEN);
+	    }
+	    rem = rsize*(nrecs-1);
+	    nbytes = rsize;
+	    for (; rem > 0;) {
+		if (rem < nbytes) nbytes = rem;
+		if ((n = read (diskfd, buff, nbytes)) <= 0) {
+		    fprintf (stderr, "%s: file read error #%d in %s\n",
+			     program_name, errno, ffile);
+		    if (muy_verbose)
+			fprintf(stderr,"###nbytes=%d,rem=%d,n=%d,recno=%d\n",
+				nbytes,rem,n,recno);
+		    perror(program_name);
+		    exit(ERR_IO);
+		}
+#ifdef alliant
+		vec_bmov_s(obuff+1,buff,n/2,2,2);
+		vec_bmov_s(obuff,buff+1,n/2,2,2);
+#else 
+		for (p = buff,q = obuff; p < buff+n;) {
+		    q[1] = *p++;
+		    *q++ = *p++;
+		    q++;
+		}
+#endif alliant
+		if (rmtwrite(tapefd, obuff, n) <= 0) {
+		    fprintf (stderr, "%s: tape write error #%d in %s\n",
+			     program_name, errno, nrtape);
+		    perror(program_name);
+		    exit(ERR_IO);
+		}
+		rem -= nbytes;
+		recno ++;
+	    }
+	    close(diskfd);
+	    filen ++;
+	    recno = 0;
+	} else {
+	    close (diskfd);
+	    rmtclose(tapefd);
+	    filen ++;
+	    recno = 0;
+	    break;
+	}
+    }
+    fclose (ctldev);
+}				/* end to_tape() */
+
+/********************************
+ *				*
+ *	i4pickup		*
+ *				*
+ ********************************/
+
+long int
+i4pickup_vax(inp)
+     unsigned char *inp;
+{
+    return((inp[3]<<24) + (inp[2]<<16) + (inp[1]<<8) + inp[0]);
+}
+
+long int
+i4pickup(inp)
+     unsigned char *inp;
+{
+    return((inp[0]<<24) + (inp[1]<<16) + (inp[2]<<8) + inp[3]);
+}
+
+void trans_hdr(buf1,buf2,bufsiz)
+     char *buf1,*buf2;
+     int bufsiz;
+{
+    int i;
+
+    for (i = 0; i < bufsiz; i += 4) {
+	buf2[i+3] = buf1[i+0];
+	buf2[i+2] = buf1[i+1];
+	buf2[i+1] = buf1[i+2];
+	buf2[i+0] = buf1[i+3];
+    }
+}
+
+void parse_hdr(buffer)
+     char *buffer;
+{
+    long int (*pickup)();
+    char c1, c2;
+    char cff = 0xFF;
+
+    hdrflag = 0;		/* assume the best */
+    if (buffer[0]) {		/* if 1st byte is non-zero, hdr is vax fmt */
+	pickup = i4pickup_vax;
+    } else {
+	pickup = i4pickup;
+    }
+    month = (*pickup)(&buffer[4*0]);
+    if (month < 1 || month > 12) badhdr("Invalid Month",month,HDR_BAD_DATE);
+    day = (*pickup)(&buffer[4*1]);
+    if (day < 1 || day > 31) badhdr("Invalid Day",day,HDR_BAD_DATE);
+    year = (*pickup)(&buffer[4*2]);
+    if (year < 70 || year > 99) badhdr("Invalid Year",year,HDR_BAD_DATE);
+    hour = (*pickup)(&buffer[4*3]);
+    if (hour < 0 || hour > 24) badhdr("Invalid Hour",hour,HDR_BAD_DATE);
+    minute = (*pickup)(&buffer[4*4]);
+    if (minute < 0 || minute > 59) badhdr("Invalid Minute",minute,HDR_BAD_DATE);
+    second = (*pickup)(&buffer[4*5]);
+    if (second < 0 || second > 59) badhdr("Invalid Second",second,HDR_BAD_DATE);
+    tick = (*pickup)(&buffer[4*6]);
+    if (tick < 0 || tick > 99) badhdr("Invalid Tick",tick,HDR_BAD_DATE);
+    nlines = (*pickup)(&buffer[4*7]);
+    nrecs = (*pickup)(&buffer[4*8]);
+    if (nrecs <= 0) 
+	badhdr("Invalid nrecs [hdr(9)], assuming something reasonable",nrecs,0);
+    dtype = (*pickup)(&buffer[4*19]);
+    if (dtype < 0 || dtype > 1) badhdr("Invalid Dtype",dtype,0);
+    dsize = (*pickup)(&buffer[4*21]);
+    if (dsize <= 0 || dsize > 8) badhdr("Invalid dsize",dsize,HDR_BAD_SIZE);
+    lsize = (*pickup)(&buffer[4*22]);
+    if (lsize <= 0) badhdr("Invalid Tw/ln",lsize,HDR_BAD_SIZE);
+    c1 = (*pickup)(&buffer[4*64]);
+    c2 = (*pickup)(&buffer[4*64]) >> 8;
+    if ((c1 ^ c2 == cff) && (hprefix > '@') &&  (hprefix <= 'z'))
+	hdrprefix = c1;
+    else
+	hdrprefix = 0;
+	
+    if (hdrflag & HDR_BAD_DATE)
+	month=day=year=hour=minute=second=tick=0; /* don't make the filename too screwy */
+    if (hdrflag & HDR_BAD_SIZE)
+	abort(ERR_HDR);
+    if (nrecs <= 0)
+	nrecs = (lsize*dsize*nlines+8191)/8192 + 1;
+    rsize = (dsize*lsize) * ((nlines+nrecs-2)/(nrecs-1));
+    if (muy_verbose)
+	fprintf(stderr,
+		"### nlines=%d, nrecs=%d, dtype=%d, dsize=%d, lsize=%d, rsize=%d\n",
+		nlines,nrecs,dtype,dsize,lsize,rsize);
+}
+
+void
+badhdr(message,value,flag)
+     char *message;
+     int value,flag;
+{
+    fprintf(stderr,"%s: %s -- %d\n",program_name,message,value);
+    hdrflag |= flag;
+}
+
+/********************************
+ *				*
+ *	finish_disk_file	*
+ *				*
+ ********************************/
+
+
+
+void finish_disk_file()
+{		 
+    int padding, psize, i;
+
+    if (muy_verbose)
+	fprintf(stderr,
+		"###diskfd=%d,scan_only=%d,esize=%d,isize=%d,osize=%d\n",
+		diskfd,scan_only,esize,isize,osize);
+    if (isize  != esize) {
+	fprintf(stderr,
+		"%s: frame is not expected length (%d instead of %d)\n",
+		program_name, isize,esize);
+    }				/* if (isize  != esize) */
+	if (diskfd > 0) {	/* if previous file open */
+#ifdef BLKFACTOR
+	    if (framcp) {
+		psize = esize;
+	    } else {
+		psize = ((nlines+BLKFACTOR-1) / BLKFACTOR * BLKFACTOR) * dsize * lsize;
+	    }
+	    padding = psize - osize;
+	    while (padding > 0) {
+		if (muy_verbose)
+		    fprintf(stderr,"### psize=%d, padding=%d\n",psize,padding);
+#ifdef alliant
+		vec_bset(obuff,0,MAXBUF);
+#else
+		for (i = 0; i < MAXBUF; ) {
+		    buff[i++] = 0;
+		}
+#endif alliant
+		write(diskfd, obuff, (padding > MAXBUF ? MAXBUF : padding));
+		padding -= MAXBUF;
+	    }
+#else
+	    if (vicar_padding) {
+		if (framcp) 
+		    psize = esize;
+		else
+		    psize = esize + vicar_padding*dsize*lsize;
+		padding = psize - osize;
+		while (padding > 0) {
+		    if (muy_verbose)
+			fprintf(stderr,
+				"### psize=%d, padding=%d\n",psize,padding);
+#ifdef alliant
+		    vec_bset(obuff,0,MAXBUF);
+#else
+		    for (i = 0; i < MAXBUF; ) {
+			buff[i++] = 0;
+		    }
+#endif alliant
+		    write(diskfd, obuff, (padding > MAXBUF ? MAXBUF : padding));
+		    padding -= MAXBUF;
+		}
+	    }			/* if (vicar_padding) */
+#endif BLKFACTOR
+	    
+	    if (isize != esize)
+		abort_file();
+
+	    if (framcp) {
+		hbuff[96] = nframes;
+		hbuff[97] = 0;
+		hbuff[98] = 0;
+		hbuff[99] = 0;
+		if (lseek(diskfd,0,L_SET) < 0) {
+		    fprintf(stderr,
+			    "%s: cannot seek to beginning of file\n",
+			    program_name);
+		    perror(program_name);
+		}
+		if (write(diskfd,hbuff,HDRSIZE) < 0) {
+		    fprintf(stderr,
+			    "%s: cannot rewrite disk header\n", program_name);
+		    perror(program_name);
+		    exit(ERR_IO);
+		}
+	    }			/* if (framcp) */
+	    close(diskfd);
+	    diskfd = -1;
+	}			/*  if (diskfd > 0) */
+    esize = isize = osize = 0;
+}
+
+#ifndef vms
+void showstatus(tapefd)
+     int tapefd;
+{
+    struct mtget mtget;
+#ifdef MTIOCVSR
+    struct mtvsr mtvsr;
+#endif MTIOCVSR
+    int n;
+
+    mtget.mt_type = 0;
+    mtget.mt_dsreg = 0;
+    mtget.mt_erreg = 0;
+    mtget.mt_resid = 0;
+    mtget.mt_fileno = 0;
+    mtget.mt_blkno = 0;
+
+    n = rmtioctl(tapefd,MTIOCGET,mtget);
+    fprintf(stderr,"###ioctl(tapefd,MTIOCGET,mtget) returned %d\n",n);
+    if (n >= 0) {
+	fprintf(stderr,"### mt_type=%x\n",mtget.mt_type);
+	fprintf(stderr,"### mt_dsreg=%x\n",mtget.mt_dsreg);
+	fprintf(stderr,"### mt_erreg=%x\n",mtget.mt_erreg);
+	fprintf(stderr,"### mt_resid=%x\n",mtget.mt_resid);
+	fprintf(stderr,"### mt_fileno=%x\n",mtget.mt_fileno);
+	fprintf(stderr,"### mt_blkno=%x\n",mtget.mt_blkno);
+    }
+#ifdef NEVER
+#ifdef MTIOCVSR
+    n = rmtioctl(tapefd,MTIOCVSR,mtvsr);
+    fprintf(stderr,"### ioctl(tapefd,MTIOCVSR,mtvsr) returned %d\n",n);
+    if (n >= 0) {
+ 	fprintf(stderr,"### mt_status=%x\n",mtvsr.mt_status);
+	fprintf(stderr,"### mt_valid=%x\n",mtvsr.mt_valid);
+    }
+#endif MTIOCVSR
+#endif NEVER
+}
+#endif vms
+
+HANDLER_RETURN sigint_handler(sig,code,scp,srp)
+     int sig, code;
+     struct sigcontext *scp;
+     struct sigregs *srp;
+{
+
+    fprintf(stderr,"%s: Interrupted in file %d,  record %d (%d.%d)\n",
+	    program_name,filen,recno,nframes-1,recno-firstrec);
+    kludge |= k_8;		/* don't leave partial file */
+    abort(ERR_INT);
+#ifdef alliant
+    return(0);			   /* this is to make Alliant FX/C happy */
+#endif
+}
+
+void delete_hdr_and_data()
+{
+    fprintf(stderr,"%s: deleting data and header files for %s\n",
+	    program_name, ffile+1);
+    unlink(hfile);
+    unlink(ffile);
+    close(diskfd);
+    diskfd = -1;
+}
+
+void rename_diskfile() 
+{
+    char badname[FMTSIZ+5];
+    int badnum = 1;
+
+    for (badnum = 1; badnum < 10; badnum++) {
+	sprintf(badname,"%s.bad%d",ffile,badnum);
+	if (link(ffile,badname) == 0) {
+	    unlink(ffile);
+	    fprintf(stderr,"%s: %s renamed to %s\n",
+		    program_name, ffile,badname);
+/*** do not stop storing ***
+	    close(diskfd);
+	    diskfd = -1;
+ *** do not stop storing ***/
+	    break;
+	}
+    }
+}
+
+void abort_file()
+{
+    if (hdrfd > 0 && inmode) {
+	fprintf(stderr,"%s: deleting header %s\n", program_name,hfile);
+	unlink(hfile);
+	close(hdrfd);
+	hdrfd = -1;
+    }
+    if (diskfd > 0 && inmode) {
+	if (kludge & k_16) {
+	    rename_diskfile();
+	} else if (kludge & k_8) {
+	    delete_hdr_and_data();
+	}
+    }
+}
+
+void abort(code)
+     int code;
+{
+    abort_file();
+    exit(code);
+}
+
+void
+usage()
+{
+#ifndef vms
+    fprintf (stderr,
+"You must specify one of -i, -o, or -s.   Options:\n\
+ -c	conversational (on tape errors)\n\
+ -CFFFF control file, where FFFF is the file to use instead of sunio0000000\n\
+ -d	disk_mode: all reads for expected size (use if `tape' is disk file)\n\
+ -D	debug mode ** DON'T USE **\n\
+ -eX	error action, where X is a,e,i, or r\n\
+ -fB,C	read only selected frames, where B = beginning frame, C = count\n\
+ -F	FRAMCP mode ** DON'T USE **\n\
+ -hHHHH	hostaname, where HHHH is remote host with the tape drive\n\
+ -HDDDD	header directory, where DDDD is the directory containing the headers\n\
+ -i	input from tape (one of the 3 modes)\n\
+ -k1	kludge 1: ignore first record of tape file (extra header) \n\
+ -k2	kludge 2: read in only the headers\n\
+ -k4	kludge 4: reopen tape after tape mark on -m (exabyte)\n\
+ -k8	kludge 8: delete any frame not the expected size\n\
+ -k16	kludge 16: rename any frame not the expected size to *.bad?\n\
+ -k32	kludge 32: if a record is the wrong size, backspace and reread it\n\
+ -k64   kludge 64: try to reopen tape on error\n\
+ -k128  kludge 128: replace data files that already exist on disk\n\
+ -m	multifile mode (read past single tapemarks)\n\
+ -nNN	number of the tape ** DON'T USE **\n\
+ -N0	(Namfmt) Format of file names: 0= same as -O \n\
+ -N1	(Namfmt) Format of file names: 1= Pyymmdd:hhmmss (contrast to -O) \n\
+ -N2	(Namfmt) Format of file names: 2= Pyymmdd.hhmmss \n\
+ -N3	(Namfmt) Format of file names: 3= Pyymmdd:Thhmmss \n\
+ -o	output to tape (one of the 3 modes)\n\
+ -O	(old) Format of file names= Pyy-mm-dd:hh:mm:ss.ttt (contrast to -N) \n\
+ -pNN   pad disk file with NN extra lines (VICAR wants 12 for 1024**2 images)\n\
+ -PX	prefix, where x is the prefix character to use on input instead of D\n\
+ -r	don't pad short records\n\
+ -rNN	pad all records to size NN\n\
+ -r0	pad records to size found in header (default action)\n\
+ -s	scan only (one of the 3 modes)\n\
+ -S	standard-in ** DON'T USE **\n\
+ -tDDDD	tape device name, where DDDD is the device name\n\
+ -v	verbose mode\n\
+ -V	very verbose mode\n\
+ -NN	where NN is a number means use /dev/nrmtNN ** obsoleted by -t **\n"
+	     );
+#else
+    fprintf(stderr,
+"You must specify one of -i, -o, or -s. Options:\n\
+-c -CFFFF -d -D -eX -fB,C -F -hHHHH -HDDDD -i -kNNN -m -nNN -N -o -O \n\
+-pNN -PX -r -rNN -r0 -s -S -tDDDD -v -V -NN\n"
+	    );
+#endif
+    exit(ERR_ARG);
+}

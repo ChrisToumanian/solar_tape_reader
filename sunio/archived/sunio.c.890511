@@ -1,0 +1,1332 @@
+/*
+ *	sunio - read in sun pictures, reformating I*2's & splitting into
+ *	one file per image.  Write out sun pictures to tape, using
+ *	a log file made by "sunio -i", or a reasonable facsimile.
+ *	Adapted 11/87 by Dennis R. Smith, Univ. of Southern Calif. from:
+ *
+ *      tcp - this routine runs in input (-i) and output (-o) modes. On
+ *      input, it reads a tape's contents (out to the double tape-marks)
+ *      and writes that data to files in a the current directory, along
+ *      with a file of data which will allow reconstruction of the tape
+ *      in the output mode.
+ *
+ *      Copyright (C) 1983, 1984 Lyle McElhaney
+ *      Permission to copy for non-commercial use granted under condition
+ *      that this notice remains intact in the copy.
+ *
+ *      Address: 2489 W. Ridge Rd., Littleton, CO 80120
+ *      ....denelcor!lmc
+ * 
+ *	Modified 9/12/86 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Fix multiple options.
+ *	Add -v (verbose) switch.
+ *
+ *	Modified 2/12/87 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Added -e (error action) switch: On error, behave as if user
+ *	 typed the character following the '-e'.  Options: Abort, Ignore,
+ *	 Eof (treat as tape mark).
+ *
+ *	Modified 4/10/87 by Dennis R. Smith, Univ. of Southern Calif.
+ *	Added -hHOSTNAME to allow for 'remote tcp': rmt code stolen
+ *	from rtar.
+ *
+ */
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/file.h>
+#ifndef O_RDONLY
+#include <fcntl.h>		/* for UNICOS */
+#endif
+#include <errno.h>
+#ifdef MTIO
+#include <sys/mtio.h>
+#endif
+#ifndef L_SET			/* for UNICOS */
+#define L_SET 0
+#endif
+#define MAXBUF 32768            /* maximum tape physical record size */
+#define HDRSIZE 512
+/* #define BLKFACTOR 14 */
+#ifndef YES
+#define NO 0
+#define YES 1
+#endif
+#define NYU 2
+
+int	open();
+int	read();
+int	write();
+int	close();
+int	ioctl();
+long	lseek();
+
+#ifdef MTIO
+int	rmtopen();
+int	rmtread();
+int	rmtwrite();
+int	rmtclose();
+int	rmtioctl();
+long	rmtlseek();
+#endif MTIO
+
+int	(*t_open)();
+int	(*t_read)();
+int	(*t_write)();
+int	(*t_close)();
+int	(*t_ioctl)();
+long	(*t_lseek)();
+
+static void abort();
+void finish_disk_file();
+void parse_hdr();
+void to_tape(), from_tape();
+
+extern char *index();
+extern int errno;
+char dnrtape[]="/dev/nrmt%d";
+char dtape[]="/dev/rmt%d";
+char disk_mode_dnrtape[]="./nrmt%d";
+char disk_mode_dtape[]="./rmt%d";
+int tape_drive_no = 8;
+char host[25], tape[100], nrtape[100];
+char *tape_file = NULL;
+/* char ffh[]="tcp,f"; */      /* headers for temp filenames */
+char nfh[]="sunio";
+char format[]="%s%02d%05d"; /* format of filenames. args: [fcn]fh, tapen, nfile */
+#define FMTSIZ 1024       /* limit on size of filenames created + 1 */
+char cfile[FMTSIZ] = "\0",
+     hfile[FMTSIZ] = "H",
+     ffile[FMTSIZ] = "D";
+char hprefix = 'H',
+     dprefix = 'D';
+char buff[MAXBUF];
+char obuff[MAXBUF];
+char hbuff[HDRSIZE];
+char buf[20];
+char *p,*q;
+int nfile;
+int disk_mode=NO;
+int use_stdin=NO;
+int multi_file=NO;
+int rmt=NO;			/* remote file if TRUE */
+int verbose=NO;
+int muy_verbose=NO;
+int reclen = 0;
+int pad_records = -1;		/* pad records to recsize */
+int vicar_padding = 0;
+int scan_only=NO;
+int skip = NO;
+char *hdir = "";		/* header directory if not . */
+int tapen=0;
+#define MAXFRAMES 120
+int frame_begin[MAXFRAMES+1] = {0,-1};
+int frame_count[MAXFRAMES] = {32767};
+int frame_ptr = 0;
+int inmode=NYU;         /* input mode - not yet set. User must choose. */
+int wrmode=O_WRONLY;
+FILE *ctldev;
+int diskfd = -1;
+int tapefd;
+long recno, nrec, isize = 0, osize = 0, esize = 0, filen;
+int nframes = 0;
+int framcp=NO;			/* default is not framcp format */
+int kludge=0;
+#define k_1 1
+#define k_2 2
+#define k_3 4
+#ifdef MTIO
+int convmode=NO;        /* conversational mode default to no */
+int action=0;			/* no forced action */
+
+struct mtop mtop;
+#endif
+long int month, day, year, hour, minute, second, tick,
+     nlines, nrecs, dtype, dsize, lsize, rsize;
+int hrec = 0;
+int nbytes;
+long int i4pickup();
+int n, i, rem;
+
+
+main (argc, argv)
+    int argc;
+    char **argv;
+{
+
+    argv++;
+    while (argc > 1) {
+	p = *argv;
+	if (*p == '-') {
+	    p++;
+	    if (*p != '\0') {
+		switch (*p++) {
+#ifdef MTIO
+		  case 'c':	/* -c = 'Conversational' (on errors) */
+		    convmode = YES;
+		    break;
+#endif MTIO
+		  case 'C':	/* -Cfile specifies name of the control file */
+		    strcpy(cfile,p);
+		    break;
+		  case 'd':	/* -d = 'Disk_Mode */
+		    disk_mode = YES;
+		    wrmode = O_WRONLY|O_CREAT;
+		    break;
+#ifdef MTIO
+		  case 'e':	/* -eX = Automatically take action X on error */
+		    /*        Actions: 	'a' = abort */
+		    /*                 	'e' = treat as EOF */
+		    /* 			'i' = ignore */
+		    /*     		'r' = retry */
+		    if (((action = *p++) != 'r' && action != 'e' &&
+			 action != 'i'))
+			action == 'a';
+		    convmode = YES;
+		    break;
+#endif MTIO
+		  case 'f':	/* -fB,C select frames */
+		    if (frame_ptr < MAXFRAMES) {
+			if (sscanf(p,"%d,%d",&frame_begin[frame_ptr],
+				   &frame_count[frame_ptr]) != 2)
+			    goto Usage;
+			frame_begin[++frame_ptr] = -1;
+		    }
+		    break;
+		  case 'F':	/* -F = 'FRAMCP mode' */
+		    framcp = YES;
+		    break;
+#ifdef MTIO
+		  case 'h':	/* -hHOSTNAME use tape on remote host */
+		    rmt = 1;	/* remote tape */
+		    strcpy(host,p); /* copy host name */
+		    break;
+#endif MTIO
+		  case 'H':	/* -Hdirectory = get headers from directory */
+		    hdir = p;
+		    break;
+		  case 'i':	/* -i = 'Input' mode ('tape' to disk files */
+		    if (inmode != NYU) goto Usage;
+		    inmode = YES;
+		    break;
+		  case 'k':	/* kludge */
+		    kludge |= *p - '0';
+		    break;
+		  case 'm':	/* -m = Multifile (read all files) */
+		    multi_file = YES;
+		    break;
+		  case 'n':	/* -nXX = 'Tape number': allows multiple tapes */
+		    tapen = atoi (p); /*        in one directory */
+		    break;
+		  case 'o':	/* -o = 'Output' mode (disk file to 'tape' */
+		    if (inmode != NYU) goto Usage;
+		    inmode = NO;
+		    break;
+		  case 'p':	/* -pNN VICAP Padding */
+		    vicar_padding = atoi(p);
+		    break;
+		  case 'P':	/* -Px prefix character for data file */
+		    {
+			dprefix = *p++;
+			if (((dprefix >= 'A') && (dprefix <  'H')) || /* not H */
+			    ((dprefix >  'H') && (dprefix <= 'Z')) ||
+			    ((dprefix >= 'a') && (dprefix <= 'z'))) {
+			    *ffile = dprefix;
+			    break;
+			} else {
+			    fprintf(stderr,"Invalid prefix character\n");
+			    exit(2);
+			}
+		    }
+		  case 'r':
+		    if (*p == 0) {
+			pad_records = 0; /* don't pad records */
+		    } else {
+			pad_records = 1; /* pad records to specified size */
+			reclen = atoi(p);
+			if (reclen > MAXBUF) reclen = MAXBUF;
+			if(reclen == 0) pad_records = -1; /* based on rsize */
+		    }
+		    break;
+		  case 's':
+		    scan_only = YES;
+		    inmode = YES;
+		    break;
+		  case 'S':
+		    use_stdin = YES;
+		    break;
+		  case 't':	/* -tdevice_name : specify device fully */
+				/* overrides numeric tape specification */
+		    tape_file = p;
+		    break;
+		  case 'v':	/* -v = 'Verbose' mode: tell each file processed */
+		    verbose = YES;
+		    break;
+		  case 'V':	/* -V = 'Muy Verbose' mode: babble a lot */
+		    verbose = muy_verbose = YES;
+		    break;
+		  case '2':	/* XX = use mag tape drive XX */
+		  case '3':
+		  case '4':
+		  case '5':
+		  case '6':
+		  case '7':
+		  case '8':
+		  case '9':
+		  case '0':
+		    tape_drive_no = *(p-1) - '0';
+		    break;
+		  case '1':
+		    if (*p >= '0' && *p <= '5')
+			tape_drive_no = 10 + *p - '0';
+		    else
+			tape_drive_no = 1;
+		    break;
+		  default:
+		  Usage:
+		    fprintf (stderr,
+			     "You must specify one of -i, -o, or -s.   Options:\n\
+ -c	conversational (on tape errors)\n\
+ -CFFFF control file, where FFFF is the file to use instead of sunio0000000\n\
+ -d	disk_mode: all reads for expected size (use if `tape' is disk file)\n\
+ -eX	error action, where X is a,e,i, or r\n\
+ -fB,C	read only selected frames, where B = beginning frame, C = count\n\
+ -F	FRAMCP mode ** DON'T USE **\n\
+ -hHHHH	hostaname, where HHHH is remote host with the tape drive\n\
+ -HDDDD	header directory, where DDDD is the directory containing the headers\n\
+ -i	input from tape (one of the 3 modes)\n\
+ -k1	kludge 1: ignore first record of tape file (extra header) \n\
+ -k2	kludge 2: read in only the headers\n\
+ -k4	kludge 4: reopen tape after tape mark on -m (exabyte)\n\
+ -m	multifile mode (read past single tapemarks)\n\
+ -nNN	number of the tape ** DON'T USE **\n\
+ -o	output to tape (one of the 3 modes)\n\
+ -pNN   pad disk file with NN * 2048 extra bytes (VICAR routines want 12)\n\
+ -PX	prefix, where x is the prefix character to use on input instead of D\n\
+ -r	don't pad short records\n\
+ -rNN	pad all records to size NN\n\
+ -r0	pad records to size found in header (default action)\n\
+ -s	scan only (one of the 3 modes)\n\
+ -S	standard-in ** DON'T USE **\n\
+ -tDDDD	tape device name, where DDDD is the device name\n\
+ -v	verbose mode\n\
+ -V	very verbose mode\n\
+ -NN	where NN is a number: use /dev/nrmtNN\n");
+		    exit (2);
+		}		/* switch */
+	    }
+	    else
+		goto Usage;
+	    argc--;
+	    argv++;
+	}
+	else
+	    goto Usage;
+    }				/*  while argc > 1 */
+    if (inmode == NYU) goto Usage;
+    if (framcp && scan_only) {
+	fprintf(stderr,"Scan mode and FRAMCP mode are incompatable\n");
+	exit(1);
+    } else if (framcp && !inmode) {
+	fprintf(stderr,"Output from FRAMCP format not yet supported\n");
+	exit(1);
+    }
+
+    if (rmt) {
+#ifdef MTIO
+	t_open = rmtopen;
+	t_read = rmtread;
+	t_write = rmtwrite;
+	t_close = rmtclose;
+	t_ioctl = rmtioctl;
+	t_lseek = rmtlseek;
+	action = 'a';
+#endif MTIO
+    } else {
+	t_open = open;
+	t_read = read;
+	t_write = write;
+	t_close = close;
+	t_ioctl = ioctl;
+	t_lseek = lseek;
+    }
+    if (disk_mode) {
+	sprintf(tape,disk_mode_dtape,tape_drive_no);
+	sprintf(nrtape,disk_mode_dnrtape,tape_drive_no);
+    } else {
+	sprintf(tape,dtape,tape_drive_no);
+	sprintf(nrtape,dnrtape,tape_drive_no);
+    }
+    if (tape_file != NULL) {
+	strcpy(tape,tape_file);
+	strcpy(nrtape,tape_file);
+    }
+    if (cfile[0] == '\0')
+	sprintf (cfile, format, nfh, tapen, 0);
+    
+    if (inmode) {
+	from_tape();
+    } else {
+	to_tape();
+    }
+}
+
+void
+from_tape()
+{
+    /*
+     *      input mode - read tape into files.
+     */
+    nbytes = sizeof buff;
+    if (!scan_only) {
+	if ((ctldev = fopen (cfile, "w+")) == NULL) {
+	    fprintf (stderr, "sunio: cannot open %s\n", cfile);
+	    perror("sunio");
+	    exit (2);
+	}
+	setbuf(ctldev,NULL);
+    }
+
+    if (use_stdin) {
+	if (verbose) fprintf(stderr,"Using stdin\n");
+	tapefd = 0;
+    } else {
+	if (verbose)
+	    if (rmt)
+		fprintf(stderr,"Opening %s on %s for read\n",nrtape,host);
+	    else
+		fprintf(stderr,"Opening %s for read\n",nrtape);
+	if ((tapefd = (*t_open)(nrtape, O_RDONLY)) < 0) {
+	    fprintf (stderr, "sunio: cannot open %s\n", nrtape);
+	    perror("sunio");
+	    exit (2);
+	}
+    }
+    filen = 0;
+    frame_ptr = 0;
+    for (;;) {			/* for each file on tape */
+	recno = 0;
+	if (disk_mode)
+	    nbytes = HDRSIZE;
+      reread:
+	while ((n = (*t_read)(tapefd, buff, nbytes)) > 0) {
+	    isize += n;
+	    if (kludge&1) {
+		n = (*t_read)(tapefd, buff, nbytes);
+		isize = n;
+		kludge -= 1;
+	    }
+	    if (isize == HDRSIZE && nframes == 1) {
+		/* kludge for extra header at beginning of some tapes */
+		n = (*t_read)(tapefd, buff, nbytes);
+		isize = n;
+	    }
+	    if (n == HDRSIZE) {
+		/* this is header */
+		if (nframes >= frame_begin[frame_ptr]+frame_count[frame_ptr]) { /* enough frames? */
+		    if (frame_begin[++frame_ptr] < 0) {
+			isize -= n;	/* yes, get actual size of frame */
+			n = 0;	/* fake an eof */
+			break;
+		    }
+		}
+		nframes += 1;
+		bcopy(buff,hbuff,HDRSIZE); /* save last header */
+		isize -= HDRSIZE;
+		finish_disk_file(); /* finish disk file if any */
+		parse_hdr();
+		if (disk_mode) {
+		    hrec = recno + nrecs - 1;
+		    nbytes = rsize;
+		    if (muy_verbose)
+			fprintf(stderr,"### hrec = %d, nbytes = %d\n",
+				hrec,nbytes);
+		}
+		esize = nlines*dsize*lsize;
+		if (pad_records < 0)
+		    reclen = rsize;
+
+		if (framcp) {
+		    if (dprefix == 'D')
+			dprefix = 'f';
+		}
+			    
+		if (tapen) {
+		    sprintf(ffile,"%c%03d,%02d-%02d-%02d:%02d:%02d:%02d.%03d",
+			    dprefix,tapen,year,month,day,hour,minute,second,tick);
+		} else {
+		    sprintf(ffile,"%c%02d-%02d-%02d:%02d:%02d:%02d.%03d",
+			    dprefix,year,month,day,hour,minute,second,tick);
+		}
+		if (*hdir != '\0')
+		    sprintf(hfile,"%s/H%s",hdir,ffile+1);
+		else
+		    strcpy(hfile+1,ffile+1);
+
+		if (framcp) {
+		    if (nframes == 1) {
+			fprintf(stderr,"Tape -> %s\n",ffile);
+			if ((diskfd = open(ffile,O_CREAT|O_EXCL|O_WRONLY,0666)) < 0) {
+			    fprintf (stderr,"sunio: cannot open %s\n", ffile);
+			    perror("sunio");
+			    exit (2);
+			}
+			if (write(diskfd,hbuff,n) < 0) {
+			    fprintf(stderr,"sunio: cannot write disk header\n");
+			    perror("sunio");
+			    exit (2);
+			}
+		    }
+		    if (write(diskfd,hbuff,n) < 0) {
+			fprintf(stderr,"sunio: cannot write frame header\n");
+			perror("sunio");
+			exit (2);
+		    }
+		}
+
+		skip = scan_only || (nframes <= frame_begin[frame_ptr]);
+		if (scan_only || (framcp && verbose) || (skip && verbose))
+		    fprintf(stderr,"[%s]",ffile+1);
+		else if (verbose) {
+		    if (kludge & 2)
+			fprintf(stderr,"Tape -> H%s",ffile+1);
+		    else
+			fprintf(stderr,"Tape -> %s",ffile);
+		}
+		if (!skip)
+		    fprintf(ctldev,"%s\n",ffile);
+		/* write header file */
+		if (!skip && !framcp) {
+		    if ((diskfd =
+			 open (hfile,O_CREAT|O_EXCL|O_WRONLY,0666)) < 0) {
+			if (errno != EEXIST) {
+			    fprintf(stderr,
+				    "\nsunio: cannot open %s\n", hfile);
+			    perror("sunio");
+			    exit (2);
+			} else {
+			    if (verbose)
+				fprintf(stderr," [H exists]");
+			    else
+				fprintf(stderr,"[%s exists]\n",hfile);
+			}
+		    } else {
+			write(diskfd,buff,n);
+			close(diskfd);
+			diskfd = -1;
+		    }
+		    /* open data file */
+		    if (!(kludge&2) && (diskfd =
+			 open (ffile,O_CREAT|O_EXCL|O_WRONLY,0666)) < 0) {
+			if (errno != EEXIST) {
+			    fprintf (stderr,
+				     "\nsunio: cannot open %s\n", ffile);
+			    perror("sunio");
+			    exit (2);
+			} else {
+			    if (verbose)
+				fprintf(stderr," [%c exists]",*ffile);
+			    else
+				fprintf(stderr,"[%s exists]\n",ffile);
+			}
+		    }
+		}		/* if (!skip && !framcp) */
+		if (verbose || scan_only)
+		    fprintf(stderr,"\n");
+		continue;
+	    }			/* if (n == HDRSIZE) */
+	    if (diskfd >= 0) {
+		/*
+		  if (muy_verbose)
+		  fprintf(stderr,"### n = %d\n",n); 
+		  */
+
+		/* byte swapping */
+		if (!framcp) {
+#ifdef alliant
+		    vec_bmov_s(obuff+1,buff,n,2,2);
+		    vec_bmov_s(obuff,buff+1,n,2,2);
+#else 
+		    for (p = buff,q = obuff; p < buff+n;) {
+			q[1] = *p++;
+			*p++ = *q++;
+			q++;
+		    }
+#endif alliant
+		}
+		if (pad_records) {
+		    if (n != reclen) {
+			if (n < reclen) {
+#ifdef alliant
+			    vec_wset(obuff+(n/2*2),32767,(reclen-n+1)/2);
+#else
+			    for (;p < buff+reclen;)
+				*p++ = 0;
+#endif alliant
+			}
+			if (isize < esize) {
+			    isize -= n;
+			    fprintf(stderr,
+				    "sunio: record %d is %d bytes (@%d/%d)\n",
+				    recno,n,isize,esize);
+			    isize += reclen;
+			}
+		    }
+		}
+		if (write (diskfd,
+			   (framcp ? buff : obuff),
+			   (pad_records ? reclen : n)) <= 0) {
+		    fprintf (stderr, "sunio: file write error #%d in %s\n",
+			     errno, ffile);
+		    perror("sunio");
+		    exit (2);
+		}
+		osize += (pad_records ? reclen : n);
+	    } else if (scan_only && n != reclen) {
+		fprintf(stderr,"sunio: record %d is %d bytes (@%d/%d)\n",
+			recno,n,isize,esize);
+	    }
+	    recno ++;
+	    /*
+	     *		if (disk_mode) {
+	     *		    if (recno == hrec)
+	     *			nbytes = HDRSIZE;
+	     *		    else if (recno == hrec - 1)
+	     *			nbytes = (nlines*dsize*lsize) - (nrecs-2)*rsize;
+	     *		}
+	     */
+	    if (disk_mode) {
+		if (isize == esize)
+		    nbytes = HDRSIZE;
+		    
+		else if (esize - isize < nbytes)
+		    nbytes = esize - isize;
+	    }
+	}
+	if (n == 0) {
+	  Eof:
+	    if (verbose)
+		fprintf(stderr,"Number of frames: %d\n",nframes);
+	    if (recno == 0)
+		break;
+	    else {
+		filen ++;
+		finish_disk_file();
+		if(!multi_file) {
+		    break;
+		} else {
+		    if (kludge&4) { /* exabyte needs reopening to get */
+			/* past the EOF */
+			if(frame_begin[frame_ptr] < 0)
+			    break; /* done, so just quit */
+			if (use_stdin) {
+			    if (verbose) fprintf(stderr,"Using stdin\n");
+			    tapefd = 0;
+			} else {
+			    (*t_close)(tapefd); /* exabyte close always fails */
+			    if (verbose)
+				if (rmt)
+				    fprintf(stderr,"Opening %s on %s for read\n",nrtape,host);
+				else
+				    fprintf(stderr,"Opening %s for read\n",nrtape);
+			    if ((tapefd = (*t_open)(nrtape, O_RDONLY)) < 0) {
+				fprintf (stderr, "sunio: cannot open %s\n", nrtape);
+				perror("sunio");
+				exit (2);
+			    }
+			}
+		    }
+		}
+	    }
+	} else {
+	    fprintf(stderr,"sunio: Tape read error %d in record %ld\n",
+		    n, recno);
+	    perror("sunio");
+	    if (muy_verbose)
+		fprintf(stderr,
+			"###nbytes=%d,esize=%d,isize=%d,osize=%d\n",
+			nbytes,esize,isize,osize);
+
+#ifdef MTIO
+	    for (;;) {
+		if (convmode) {
+		    fprintf(stderr,"Abort, Retry, Eof, or Ignore? ");
+		    if (*buf = action)
+			fprintf(stderr,"%c\n",action);
+		    if ((action) || gets (buf) != NULL) {
+			if (*buf == 'R' || *buf == 'r') {
+			    mtop.mt_count = 1;
+			    mtop.mt_op = MTBSR;
+			    if (((*t_ioctl)(tapefd, MTIOCTOP, &mtop)) < 0) {
+				fprintf(stderr,
+					"error %d in ioctl; ignoring prev error.\n", errno);
+				recno ++;
+			    }
+			    goto reread;
+			} else if (*buf == 'I' || *buf == 'i') {
+			    recno ++;
+			    goto reread;
+			} else if (*buf == 'E' || *buf == 'e')
+			    goto Eof;
+			else if (*buf == 'A' || *buf == 'a')
+			    exit (1);
+		    }
+		} else
+		    exit (1);
+	    }
+#else
+	    exit (1);
+#endif  MTIO
+	}
+    }
+    (*t_close)(tapefd);
+    /*	fprintf (ctldev, "0,1\n"); */
+    if (!scan_only)
+	fclose (ctldev);
+}				/* end from_tape */
+
+void
+to_tape()
+{
+    /*
+     *      output mode - copy files back out to tape.
+     */
+    if ((ctldev = fopen (cfile, "r")) == NULL) {
+	fprintf (stderr, "sunio: cannot open %s\n", cfile);
+	perror("sunio");
+	exit (2);
+    }
+
+    if (verbose)
+	if (rmt)
+	    fprintf(stderr,"Opening %s on %s for write\n",nrtape,host);
+	else
+	    fprintf(stderr,"Opening %s for write\n",nrtape);
+    if ((tapefd = (*t_open) (nrtape,wrmode,0600)) < 0) {
+	fprintf(stderr,"sunio: cannot open %s\n",nrtape);
+	perror("sunio");
+	exit (2);
+    }
+    recno = 0;
+    for (;;) {
+	if (fgets (ffile, FMTSIZ - 1, ctldev) != NULL) {
+	    if ((p = index(ffile,' ')) != NULL ||
+		(p = index(ffile,'\t')) != NULL ||
+		(p = index(ffile,'\n')) != NULL )
+		*p = '\0';	/* tie off filename */
+	    if (*ffile == '\0' || *ffile == '#') continue;
+	    if (*hdir != '\0')
+		sprintf(hfile,"%s/H%s",hdir,ffile+1);
+	    else
+		strcpy(hfile+1,ffile+1);
+	    if (verbose) fprintf(stderr,"Tape <- %s\n",ffile);
+	    if ((diskfd = open(hfile,O_RDONLY,0)) < 0) {
+		fprintf(stderr,"sunio: cannot open %s\n",hfile);
+		perror("sunio");
+		exit(2);
+	    }
+	    if ((n = read(diskfd,buff,HDRSIZE)) != HDRSIZE) {
+		fprintf(stderr,"sunio: error reading header %s\n",hfile);
+		perror("sunio");
+		exit(2);
+	    }
+	    parse_hdr();
+	    close(diskfd);
+      
+	    if ((*t_write)(tapefd, buff, n) <= 0) {
+		fprintf (stderr, "sunio: tape write error #%d in %s\n",
+			 errno, nrtape);
+		perror("sunio");
+		exit (2);
+	    }
+	    if ((diskfd = open (ffile, O_RDONLY,0)) < 0) {
+		fprintf (stderr, "sunio: cannot open %s\n", ffile);
+		perror("sunio");
+		exit (2);
+	    }
+	    rem = rsize*(nrecs-1);
+	    nbytes = rsize;
+	    for (; rem > 0;) {
+		if (rem < nbytes) nbytes = rem;
+		if ((n = read (diskfd, buff, nbytes)) <= 0) {
+		    fprintf (stderr, "sunio: file read error #%d in %s\n",
+			     errno, ffile);
+		    if (muy_verbose)
+			fprintf(stderr,"###nbytes=%d,rem=%d,n=%d,recno=%d\n",
+				nbytes,rem,n,recno);
+		    perror("sunio");
+		    exit (2);
+		}
+#ifdef alliant
+		vec_bmov_s(obuff+1,buff,n,2,2);
+		vec_bmov_s(obuff,buff+1,n,2,2);
+#else 
+		for (p = buff,q = obuff; p < buff+n;) {
+		    q[1] = *p++;
+		    *p++ = *q++;
+		    q++;
+		}
+#endif alliant
+		if ((*t_write)(tapefd, obuff, n) <= 0) {
+		    fprintf (stderr, "sunio: tape write error #%d in %s\n",
+			     errno, nrtape);
+		    perror("sunio");
+		    exit (2);
+		}
+		rem -= nbytes;
+		recno ++;
+	    }
+	    close(diskfd);
+	    filen ++;
+	    recno = 0;
+	} else {
+	    close (diskfd);
+	    (*t_close)(tapefd);
+	    filen ++;
+	    recno = 0;
+	    break;
+	}
+    }
+    fclose (ctldev);
+}				/* end to_tape() */
+
+#ifdef MTIO
+
+/*
+*	rmt --- remote tape emulator subroutines
+*
+*	Originally written by Jeff Lee, modified some by Arnold Robbins
+*/
+
+/* these are included above, except setjmp.h */
+/*
+#include <stdio.h>
+#include <setjmp.h>
+
+#include <sys/types.h>
+#include <sys/ioctl.h>
+#include <sys/mtio.h>
+*/
+
+#include <errno.h>
+#include <setjmp.h>
+#include <signal.h>
+
+/*
+*	MAXUNIT --- Maximum number of remote tape file units
+*
+*	READ --- Return the number of the read side file descriptor
+*	WRITE --- Return the number of the write side file descriptor
+*/
+
+#define MAXUNIT	4
+
+#define READ(fd)	(Ctp[fd][0])
+#define WRITE(fd)	(Ptc[fd][1])
+
+static int Ctp[MAXUNIT][2] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+static int Ptc[MAXUNIT][2] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+
+jmp_buf Jmpbuf;
+extern int errno;
+
+
+
+/*
+*	abort --- close off a remote tape connection
+*/
+
+static void abort(tfd)
+int tfd;
+{
+	close(READ(tfd));
+	close(WRITE(tfd));
+	READ(tfd) = -1;
+	WRITE(tfd) = -1;
+}
+
+
+
+/*
+*	command --- attempt to perform a remote tape command
+*/
+
+static command(tfd, buf)
+char *buf;
+int tfd;
+{
+	int blen;
+#ifdef sun
+	void (*pstat)();
+#else
+	int (*pstat)();
+#endif
+
+/*
+*	save current pipe status and try to make the request
+*/
+
+	blen = strlen(buf);
+	pstat = signal(SIGPIPE, SIG_IGN);
+	if (write(WRITE(tfd), buf, blen) == blen)
+	{
+		signal(SIGPIPE, pstat);
+		return(0);
+	}
+/*
+*	something went wrong. close down and go home
+*/
+
+	signal(SIGPIPE, pstat);
+	abort(tfd);
+
+	errno = EIO;
+	return(-1);
+}
+
+
+
+/*
+*	status --- retrieve the status from the pipe
+*/
+
+static status(tfd)
+int tfd;
+{
+	int i;
+	char c, *cp;
+	char buf[64];
+
+/*
+*	read the reply command line
+*/
+
+	for (i = 0, cp = buf; i < 64; i++, cp++)
+	{
+		if (read(READ(tfd), cp, 1) != 1)
+		{
+			abort(tfd);
+			errno = EIO;
+			return(-1);
+		}
+		if (*cp == '\n')
+		{
+			*cp = 0;
+			break;
+		}
+	}
+
+	if (i == 64)
+	{
+		abort(tfd);
+		errno = EIO;
+		return(-1);
+	}
+
+/*
+*	check the return status
+*/
+
+	for (cp = buf; *cp; cp++)
+		if (*cp != ' ')
+			break;
+
+	if (*cp == 'E' || *cp == 'F')
+	{
+		errno = atoi(cp + 1);
+		while (read(READ(tfd), &c, 1) == 1)
+			if (c == '\n')
+				break;
+
+		if (*cp == 'F')
+			abort(tfd);
+
+		return(-1);
+	}
+
+/*
+*	check for mis-synced pipes
+*/
+
+	if (*cp != 'A')
+	{
+		abort(tfd);
+		errno = EIO;
+		return(-1);
+	}
+
+	return(atoi(cp + 1));
+}
+
+
+
+/*
+*	rmtopen --- open a magtape device on system specified
+*/
+
+rmtopen(dev, mode)
+char *dev;
+int mode;
+{
+	int i, rc;
+	char buf[64];
+	char *sys;
+/*
+*	first, find an open pair of file descriptors
+*/
+
+	for (i = 1; i < MAXUNIT; i++)
+		if (READ(i) == -1 && WRITE(i) == -1)
+			break;
+
+	if (i == MAXUNIT)
+	{
+		errno = EMFILE;
+		return(-1);
+	}
+
+#if 0
+/*
+*	pull apart system and device
+*/
+	for (sys = dev; *dev != ':'; dev++)
+		;
+	*dev++ = '\0';
+#endif 0
+	sys = host;
+	dev = nrtape;
+/*
+*	setup the pipes for the 'rsh' command and fork
+*/
+
+	if (pipe(Ptc[i]) == -1 || pipe(Ctp[i]) == -1)
+		return(-1);
+
+	if ((rc = fork()) == -1)
+		return(-1);
+
+	if (rc == 0)
+	{
+		close(0);
+		dup(Ptc[i][0]);
+		close(Ptc[i][0]); close(Ptc[i][1]);
+		close(1);
+		dup(Ctp[i][1]);
+		close(Ctp[i][0]); close(Ctp[i][1]);
+
+		execl("/usr/ucb/rsh", "rsh", host, "/etc/rmt", (char *) 0);
+
+/*
+*	bad problems if we get here
+*/
+
+		perror("exec");
+		exit(1);
+	}
+
+	close(Ptc[i][0]); close(Ctp[i][1]);
+
+/*
+*	now attempt to open the tape device
+*/
+
+	sprintf(buf, "O%s\n%d\n", dev, mode);
+	if (command(i, buf) == -1 || status(i) == -1)
+		return(-1);
+
+	return(i);
+}
+
+
+
+/*
+*	rmtclose --- close a remote magtape unit and shut down
+*/
+
+rmtclose(tfd)
+int tfd;
+{
+	int rc;
+
+	if (command(tfd, "C\n") != -1)
+	{
+		rc = status(tfd);
+
+		abort(tfd);
+		return(rc);
+	}
+
+	return(-1);
+}
+
+
+
+/*
+*	rmtread --- read a buffer from a remote tape
+*/
+
+rmtread(tfd, data, cnt)
+int tfd, cnt;
+char *data;
+{
+	int rc, i;
+	char buf[64];
+
+	sprintf(buf, "R%d\n", cnt);
+	if (command(tfd, buf) == -1 || (rc = status(tfd)) == -1)
+		return(-1);
+
+	for (i = 0; i < rc; i += cnt, data += cnt)
+	{
+		cnt = read(READ(tfd), data, rc);
+		if (cnt <= 0)
+		{
+			abort(tfd);
+			errno = EIO;
+			return(-1);
+		}
+	}
+
+	return(rc);
+}
+
+
+
+/*
+*	rmtwrite --- write a buffer to the remote tape
+*/
+
+rmtwrite(tfd, data, cnt)
+int tfd, cnt;
+char *data;
+{
+	int rc;
+	char buf[64];
+#ifdef sun
+	void (*pstat)();
+#else
+	int (*pstat)();
+#endif
+
+	sprintf(buf, "W%d\n", cnt);
+	if (command(tfd, buf) == -1)
+		return(-1);
+
+	pstat = signal(SIGPIPE, SIG_IGN);
+	if (write(WRITE(tfd), data, cnt) == cnt)
+		return(status(tfd));
+
+	abort(tfd);
+	errno = EIO;
+	return(-1);
+}
+
+
+
+/*
+*	rmtlseek --- perform an imitation lseek operation remotely
+*/
+
+rmtlseek(tfd, wh, off)
+int tfd, wh, off;
+{
+	char buf[64];
+
+	sprintf(buf, "L%d\n%d\n", wh, off);
+	if (command(tfd, buf) == -1)
+		return(-1);
+
+	return(status(tfd));
+}
+
+
+
+/*
+*	rmtioctl --- perform raw tape operations remotely
+*/
+
+rmtioctl(tfd, op, arg)
+int tfd, op;
+char *arg;
+{
+	char c;
+	int rc, cnt;
+	char buf[64];
+
+/*
+*	MTIOCOP is the easy one. nothing is transfered in binary
+*/
+
+	if (op == MTIOCTOP)
+	{
+		sprintf(buf, "I%d\n%d\n", ((struct mtop *) arg)->mt_op,
+			((struct mtop *) arg)->mt_count);
+		if (command(tfd, buf) == -1)
+			return(-1);
+		return(status(tfd));
+	}
+
+/*
+*	we can only handle 2 ops, if not the other one, punt
+*/
+
+	if (op != MTIOCGET)
+	{
+		errno = EINVAL;
+		return(-1);
+	}
+
+/*
+*	grab the status and read it directly into the structure
+*	this assumes that the status buffer is (hopefully) not
+*	padded and that 2 shorts fit in a long without any word
+*	alignment problems, ie - the whole struct is contiguous
+*	NOTE - this is probably NOT a good assumption.
+*/
+
+	if (command(tfd, "S\n") == -1 || (rc = status(tfd)) == -1)
+		return(-1);
+
+	for (; rc > 0; rc -= cnt, arg += cnt)
+	{
+		cnt = read(READ(tfd), arg, rc);
+		if (cnt <= 0)
+		{
+			abort(tfd);
+			errno = EIO;
+			return(-1);
+		}
+	}
+
+/*
+*	now we check for byte position. mt_type is a small integer field
+*	(normally) so we will check its magnitude. if it is larger than
+*	256, we will assume that the bytes are swapped and go through
+*	and reverse all the bytes
+*/
+
+	if (((struct mtget *) arg)->mt_type < 256)
+		return(0);
+
+	for (cnt = 0; cnt < rc; cnt += 2)
+	{
+		c = arg[cnt];
+		arg[cnt] = arg[cnt+1];
+		arg[cnt+1] = c;
+	}
+
+	return(0);
+}
+#endif MTIO
+
+long int
+i4pickup(inp)
+     unsigned char *inp;
+{
+    return((inp[3]<<24) + (inp[2]<<16) + (inp[1]<<8) + inp[0]);
+}
+
+void parse_hdr()
+{
+    month = i4pickup(&buff[4*0]);
+    day = i4pickup(&buff[4*1]);
+    year = i4pickup(&buff[4*2]);
+    hour = i4pickup(&buff[4*3]);
+    minute = i4pickup(&buff[4*4]);
+    second = i4pickup(&buff[4*5]);
+    tick = i4pickup(&buff[4*6]);
+    nlines = i4pickup(&buff[4*7]);
+    nrecs = i4pickup(&buff[4*8]);
+    dtype = i4pickup(&buff[4*19]);
+    dsize = i4pickup(&buff[4*21]);
+    lsize = i4pickup(&buff[4*22]);
+    rsize = (dsize*lsize) * (nlines/(nrecs-2));
+    if (muy_verbose)
+	fprintf(stderr,
+		"### nlines=%d, nrecs=%d, dtype=%d, dsize=%d, lsize=%d, rsize=%d\n",
+		nlines,nrecs,dtype,dsize,lsize,rsize);
+}
+void finish_disk_file()
+{		 
+    int padding, psize, i;
+
+    if (muy_verbose)
+	fprintf(stderr,
+		"###diskfd=%d,scan_only=%d,esize=%d,isize=%d,osize=%d\n",
+		diskfd,scan_only,esize,isize,osize);
+    if (esize == 0) return;
+    if (diskfd >= 0 || scan_only) {
+	if (isize  != esize) {
+	    fprintf(stderr,
+		    "sunio: frame is not expected length (%d instead of %d)\n",
+		    isize,esize);
+	}
+	if (diskfd >= 0) { /* if previous file open */
+#ifdef BLKFACTOR
+	    if (framcp) {
+		psize = esize;
+	    } else {
+		psize = ((nlines+BLKFACTOR-1) / BLKFACTOR * BLKFACTOR) * dsize * lsize;
+	    }
+	    padding = psize - osize;
+	    while (padding > 0) {
+		if (muy_verbose)
+		    fprintf(stderr,"### psize=%d, padding=%d\n",psize,padding);
+#ifdef alliant
+		vec_bset(obuff,0,MAXBUF);
+#else
+		for (i = 0; i < MAXBUF; ) {
+		    buff[i++] = 0;
+		}
+#endif alliant
+		write(diskfd, obuff, (padding > MAXBUF ? MAXBUF : padding));
+		padding -= MAXBUF;
+	    }
+#else
+	    if (vicar_padding) {
+		if (framcp) 
+		    psize = esize;
+		else
+		    psize = esize + vicar_padding*dsize*lsize;
+		padding = psize - osize;
+		while (padding > 0) {
+		    if (muy_verbose)
+			fprintf(stderr,
+				"### psize=%d, padding=%d\n",psize,padding);
+#ifdef alliant
+		    vec_bset(obuff,0,MAXBUF);
+#else
+		    for (i = 0; i < MAXBUF; ) {
+			buff[i++] = 0;
+		    }
+#endif alliant
+		    write(diskfd, obuff, (padding > MAXBUF ? MAXBUF : padding));
+		    padding -= MAXBUF;
+		}
+	    }
+#endif BLKFACTOR
+	    
+
+	    if (framcp) {
+		hbuff[96] = nframes;
+		hbuff[97] = 0;
+		hbuff[98] = 0;
+		hbuff[99] = 0;
+		if (lseek(diskfd,0,L_SET) < 0) {
+		    fprintf(stderr,
+			    "sunio: cannot seek to beginning of file\n");
+		    perror("sunio");
+		}
+		if (write(diskfd,hbuff,HDRSIZE) < 0) {
+		    fprintf(stderr,
+			    "sunio: cannot rewrite disk header\n");
+		    perror("sunio");
+		    exit (2);
+		}
+	    }
+	    close(diskfd);
+	    diskfd = -1;
+	}
+    }
+    esize = isize = osize = 0;
+}
