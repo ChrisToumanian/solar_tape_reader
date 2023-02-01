@@ -29,7 +29,7 @@ pip install -r requirements.txt
 
 ## How To Use
 1. To ingest tapes navigate to `.\tape_controller` and run `.\extract_tape.ps1 <tape name> <start tape, usually 0> <number of tapes>` in PowerShell.
-2. Move the DAT files created from `.\tape_controller\tape_data\` to `.\tape_data_staging`.
+2. Move the DAT files created from `.\tape_controller\tape_data\` to `.\staging`.
 3. Open in WSL and run `./sunio/sunio -i -d -Ffits`.
 
 ## 📼Tape Deck Requirements
