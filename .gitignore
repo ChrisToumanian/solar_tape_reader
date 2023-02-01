@@ -3,4 +3,4 @@ tape_data
 out
 venv
 utilities
-tape_controller/out
+tape_controller/tape_data
