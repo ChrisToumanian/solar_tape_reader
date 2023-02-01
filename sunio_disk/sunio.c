@@ -83,6 +83,9 @@ static char id_string[] = "sunio version of 1000-01-05 13:00 drs";
  *	Modified 03/16/99 for Y2K.  Added file formats 5 & 6.  Changed spec 
  *	for year in FRAMCP format to allow 4 digit year.  Use new FITS 4-digit 
  *	year format when year > 2000.
+ *
+ *	Modified 01/31/23 to support reading binary backups of the tapes from
+ *	Linux operating systems.
  */
 
 
@@ -597,7 +600,7 @@ byte *fitshdr;
 
 byte *buffp;
 FILE *ctldev = NULL;
-// FILE *DBGfil = stderr; // removed
+// FILE *DBGfil = stderr; /* added define for this */
 char *hdir = "";		/* header directory if not . */
 char *cfile_end;
 
@@ -638,15 +641,13 @@ byte hbuff[HDRSIZE];
 
 char program_name[] = "sunio";
 #ifndef NovaStor
-//char def_tape_name[]="/dev/st%d";
-char def_tape_name[]="/dev/nst0";
+// char def_tape_name[]="/dev/nrmt%d";
+char def_tape_name[]="tape.dat"; // Only enter full path here
 #else /* NovaStor */
 char def_tape_name[]="Unit %d";
 #endif /* NovaStor */
-//char def_rmt_tape_name[]="%s:/dev/st%d";
-char def_rmt_tape_name[]="%s:/dev/nst0";
-//char def_disk_mode_tape_name[]="st%d";
-char def_disk_mode_tape_name[]="nst0";
+char def_rmt_tape_name[]="%s:tape.dat";
+char def_disk_mode_tape_name[]="tape.dat";
 char tape_name[100];
 char host[25] = "";
 char *spec_tape_name = NULL;	/* specified tape name (-ttape_name) */

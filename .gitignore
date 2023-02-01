@@ -3,5 +3,6 @@ tape_data
 out
 venv
 utilities
-tape_controller/tape_data
 tape_controller/tape.dat
+staging
+tape_data

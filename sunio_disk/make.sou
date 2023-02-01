@@ -1,0 +1,2 @@
+cc -O -c rtape_lib.c
+cc -O -o sunio sunio.c rtape_lib.o
