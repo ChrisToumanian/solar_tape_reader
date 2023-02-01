@@ -1,9 +1,10 @@
 # Read range of files from tape
+# Example: .\extract_tape.ps1 "CCD.PC4.ZHD.030619" 0 1
 $tape_name = $args[0]
 $current_tape = $args[1]
 $n_files = $args[2]
 
-write-host "Reading $n_files files from tape $filename at $(Get-Date -Format G)"
+write-host "Reading $n_files files from tape at $(Get-Date -Format G)"
 
 # Loop through tapes
 
