@@ -585,7 +585,7 @@ int debug=1;
 #define D_512	512		/* 512 = info about each tape ctl op */
 #define D_1024 1024		/* 1024 = tell rem before each read from disk */
 #define D_any	(0xFFFF)	/* any flags at all */
-
+#define DBGfil stderr
 
 /* Pointers */
 
@@ -597,7 +597,7 @@ byte *fitshdr;
 
 byte *buffp;
 FILE *ctldev = NULL;
-FILE *DBGfil = stderr;
+// FILE *DBGfil = stderr; // removed
 char *hdir = "";		/* header directory if not . */
 char *cfile_end;
 
@@ -638,12 +638,15 @@ byte hbuff[HDRSIZE];
 
 char program_name[] = "sunio";
 #ifndef NovaStor
-char def_tape_name[]="/dev/nrmt%d";
+//char def_tape_name[]="/dev/st%d";
+char def_tape_name[]="/dev/st0";
 #else /* NovaStor */
 char def_tape_name[]="Unit %d";
 #endif /* NovaStor */
-char def_rmt_tape_name[]="%s:/dev/nrmt%d";
-char def_disk_mode_tape_name[]="nrmt%d";
+//char def_rmt_tape_name[]="%s:/dev/st%d";
+char def_rmt_tape_name[]="%s:/dev/st0";
+//char def_disk_mode_tape_name[]="st%d";
+char def_disk_mode_tape_name[]="st0";
 char tape_name[100];
 char host[25] = "";
 char *spec_tape_name = NULL;	/* specified tape name (-ttape_name) */
