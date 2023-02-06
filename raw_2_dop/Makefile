@@ -1,4 +1,5 @@
 FC = f77
+C = gcc
 FCFLAGS = -O
 
 SRCS = cmpdop.f cmpsum.f cmpmag.f cmpdiff.f gcsubs.f centroid.f getell.f getlmb.f diaggja.f fitell.f fitslop.f ellstuf.f despik3.f raw2sum.f cmplmb.f modfn.f xdir.f gcentr.f raw2dop.f raw2mag.f
@@ -21,3 +22,6 @@ raw2mag: raw2mag.o gcentr.o gcsubs.o centroid.o getell.o getlmb.o fitell.o diagg
 
 clean:
 	$(RM) $(OBJS) raw2dop raw2dif raw2mag
+
+cmpronchi:
+	$(C) cmpronchi.c -o compronchi -lm
