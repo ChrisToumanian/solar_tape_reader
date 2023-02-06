@@ -20,8 +20,8 @@ raw2mag: raw2mag.o gcentr.o gcsubs.o centroid.o getell.o getlmb.o fitell.o diagg
 .f.o:
 	$(FC) $(FCFLAGS) -c $<
 
-clean:
-	$(RM) $(OBJS) raw2dop raw2dif raw2mag
-
 cmpronchi:
-	$(C) cmpronchi.c -o compronchi -lm
+	$(C) cmpronchi.c -o cmpronchi -lm
+
+clean:
+	$(RM) $(OBJS) raw2dop raw2dif raw2mag cmpronchi
